@@ -3,10 +3,6 @@
 
 #include "PredictionAlgorithm.hpp"
 #include <array>
-#include <bitset>
-#include <cstdint>
-#include <queue>
-#include <unordered_map>
 #include <iostream>
 
 // Place your RoboMemory content here
@@ -14,27 +10,32 @@
 struct RoboPredictor::RoboMemory {
   #define RECENCY 256
   #define BITHISTORY 4096
-  #define GLOBALHISTORY 16
+  #define CHOICETABLE 16384
   #define WEIGHTS 33
   const std::uint32_t PRIME = 2654435769;
   const std::uint64_t KNUTH = 11400714819323198485;
 
   // the current number of planets we've gone through
   int progress = 0; // KEEP THIS UPDATED!
+  bool myprediction = 0;
+
 
   std::uint64_t history = 0;
 
   // a set of perceptron weights mapped by an LRU
   // FORMAT OF THE NN:
-  // - planet id
   // - last 16 bits history
   // - last 16 bits used by planet
   // 33 total
-  std::unordered_map<std::uint64_t, std::array<std::int8_t, WEIGHTS>> NN;
-  std::array<std::uint16_t, BITHISTORY> nlru;
-    int nlru0 = 0; // front of queue
-    int nlru1 = 0; // back of queue
-  
+  std::array<std::int16_t, WEIGHTS> NN = {};
+  std::int16_t bias = 0;
+
+  std::array<std::int8_t, CHOICETABLE> choicetable = {0};
+  /* // LRU not needed
+  std::array<std::uint8_t, CHOICETABLE> clru;
+    int clru0 = 0; // front of queue
+    int clru1 = 0; // back of queue
+  */
 
   // an ultra-simple LRU cache for recency
   // OLD std::unordered_map<std::uint64_t, int> recency;
@@ -53,9 +54,10 @@ struct RoboPredictor::RoboMemory {
   RoboMemory(){
     recency.fill(0);
     bithist.fill(0);
+    
     //recency.reserve(RECENCY+10); // arbitrary +10
     //bithist.reserve(BITHISTORY+10); // arbitrary +10
-    NN.reserve(BITHISTORY+10); // arbitrary +10
+    //NN.reserve(BITHISTORY+10); // arbitrary +10
   }
 
   // a knuth multiplicative hash between 0 and 2**p (default 4096)
@@ -68,7 +70,7 @@ struct RoboPredictor::RoboMemory {
     //std::cout << h << std::endl;
     if(rlru0 == rlru1){
       //recency.erase(rlru[rlru0]);
-      recency[h] = 0;
+      recency[hash(rlru[rlru0],9)] = 0;
       rlru0 = (rlru0 + 1) % RECENCY;
     }
 
@@ -91,8 +93,8 @@ struct RoboPredictor::RoboMemory {
     std::uint64_t h = hash(planetid, 13); // 12+1 for load factor
     if(blru0 == blru1){
       //bithist.erase(blru[blru0]);
-      bithist[h] = 0;
-      NN.erase(blru[blru0]);
+      bithist[hash(blru[blru0],13)] = 0;
+      //NN.erase(blru[blru0]);
       blru0 = (blru0 + 1) % BITHISTORY;
     }
 
@@ -102,16 +104,15 @@ struct RoboPredictor::RoboMemory {
   }
 
   std::uint64_t getbithist(std::uint64_t planetid){
-    if(!bithist.count(planetid))
+    std::uint64_t h = hash(planetid, 13);
+    if(!bithist[h])
      return 0;
 
-    return bithist[planetid];
+    return bithist[h];
   }
 
-  void updateNN(std::uint64_t planetid, bool outcome){
-    if(!NN.count(planetid)){
-      NN[planetid].fill(123);
-    }
+  void updateNN(std::uint64_t planetid, bool prediction, bool real){
+    std::uint64_t h = hash(planetid);
 
   }
 
@@ -120,7 +121,7 @@ struct RoboPredictor::RoboMemory {
   void updateall(std::uint64_t planetid, bool outcome){
     addbithist(planetid, outcome);
     addrecent(planetid);
-    //updateNN(planetid, outcome);
+    updateNN(planetid, myprediction, outcome);
     history = (history << 1) | outcome;
   }
 };
@@ -142,10 +143,12 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
 
   // get recency
   int recency = roboMemory_ptr->getrecent(nextPlanetID);
+  std::uint16_t bithistory = roboMemory_ptr->getbithist(nextPlanetID);
 
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
+  //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
 
-  return spaceshipComputerPrediction;
+  return roboMemory_ptr->myprediction = spaceshipComputerPrediction;
 }
 
 // Robo can consult/update data structures in its memory
