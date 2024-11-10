@@ -30,7 +30,7 @@ struct RoboPredictor::RoboMemory {
   // - last 8 bits used by planet
   // 33 total
   std::array<std::array<std::int8_t, WEIGHTS_HIST+WEIGHTS_BITS>, BITHISTORY*2> NN = {};
-  std::int16_t bias = 0;
+  std::int8_t bias = 0;
 
   // 00 for spaceship 11 for perceptron
   // values are tied to the LRU of bithistory to save memory
@@ -126,6 +126,8 @@ struct RoboPredictor::RoboMemory {
       }
     }
 
+    output += bias;
+
     if(output>0){
       return 1;
     } else return 0;
@@ -133,9 +135,18 @@ struct RoboPredictor::RoboMemory {
 
   void updateNN(std::uint64_t planetid, bool prediction, bool real){
     std::uint64_t h = hash(planetid, 11);
+
+    int delta = (prediction == real) ? 1 : -1;
+    bias += delta;
+    for(int i = 0; i < 16; i++){
+      NN[h][i] += delta;
+    }
   }
 
 
+  bool get(std::uint64_t planetid){
+
+  }
 
   void updateall(std::uint64_t planetid, bool outcome){
     addbithist(planetid, outcome);
