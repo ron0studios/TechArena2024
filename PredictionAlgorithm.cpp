@@ -3,15 +3,17 @@
 
 #include "PredictionAlgorithm.hpp"
 #include <array>
+#include <cstdint>
 #include <iostream>
+#include <bitset>
 
 // Place your RoboMemory content here
 // Note that the size of this data structure can't exceed 64KiB!
 struct RoboPredictor::RoboMemory {
   #define RECENCY 256
-  #define BITHISTORY 4096
-  #define CHOICETABLE 16384
-  #define WEIGHTS 33
+  #define BITHISTORY 1024
+  #define WEIGHTS_HIST 8
+  #define WEIGHTS_BITS 8
   const std::uint32_t PRIME = 2654435769;
   const std::uint64_t KNUTH = 11400714819323198485;
 
@@ -19,30 +21,28 @@ struct RoboPredictor::RoboMemory {
   int progress = 0; // KEEP THIS UPDATED!
   bool myprediction = 0;
 
-
+  // main history 
   std::uint64_t history = 0;
 
   // a set of perceptron weights mapped by an LRU
   // FORMAT OF THE NN:
-  // - last 16 bits history
-  // - last 16 bits used by planet
+  // - last 8 bits history
+  // - last 8 bits used by planet
   // 33 total
-  std::array<std::int16_t, WEIGHTS> NN = {};
+  std::array<std::array<std::int8_t, WEIGHTS_HIST+WEIGHTS_BITS>, BITHISTORY*2> NN = {};
   std::int16_t bias = 0;
 
-  std::array<std::int8_t, CHOICETABLE> choicetable = {0};
-  /* // LRU not needed
-  std::array<std::uint8_t, CHOICETABLE> clru;
-    int clru0 = 0; // front of queue
-    int clru1 = 0; // back of queue
-  */
+  // 00 for spaceship 11 for perceptron
+  // values are tied to the LRU of bithistory to save memory
+  std::array<std::int8_t, BITHISTORY*2> choicetable = {0};
+  
 
   // an ultra-simple LRU cache for recency
   // OLD std::unordered_map<std::uint64_t, int> recency;
-  std::array<std::uint64_t, RECENCY*2> recency; // 2x load factor
-  std::array<std::uint64_t, RECENCY> rlru;
+  std::array<std::uint8_t, RECENCY*2> recency; // 2x load factor
+  std::array<std::uint16_t, RECENCY> rlru;
     int rlru0 = 0; // front of queue
-    int rlru1 = 0; // back of queue
+    int rlru1 = 1; // back of queue
 
   // an ultra-simple LRU cache for the "bit history" of a planet
   //std::unordered_map<std::uint64_t, std::uint16_t> bithist;
@@ -67,14 +67,13 @@ struct RoboPredictor::RoboMemory {
 
   void addrecent(std::uint64_t planetid){
     std::uint64_t h = hash(planetid, 9);
-    //std::cout << h << std::endl;
     if(rlru0 == rlru1){
       //recency.erase(rlru[rlru0]);
-      recency[hash(rlru[rlru0],9)] = 0;
+      recency[rlru[rlru0]] = 0;
       rlru0 = (rlru0 + 1) % RECENCY;
     }
 
-    rlru[rlru1] = planetid;
+    rlru[rlru1] = h;
     recency[h] = progress;
     rlru1 = (rlru1 + 1) % RECENCY;
   }
@@ -90,30 +89,50 @@ struct RoboPredictor::RoboMemory {
 
 
   void addbithist(std::uint64_t planetid, bool outcome){
-    std::uint64_t h = hash(planetid, 13); // 12+1 for load factor
+    std::uint64_t h = hash(planetid, 11); // 10+1 for load factor
     if(blru0 == blru1){
       //bithist.erase(blru[blru0]);
-      bithist[hash(blru[blru0],13)] = 0;
+      bithist[blru[blru0]] = 0;
       //NN.erase(blru[blru0]);
+      NN[blru[blru0]].fill(0);
       blru0 = (blru0 + 1) % BITHISTORY;
     }
 
-    blru[blru1] = planetid;
+    blru[blru1] = h;
     bithist[h] = (bithist[h] << 1) | outcome;
     blru1 = (blru1 + 1) % BITHISTORY;
   }
 
   std::uint64_t getbithist(std::uint64_t planetid){
-    std::uint64_t h = hash(planetid, 13);
+    std::uint64_t h = hash(planetid, 11);
     if(!bithist[h])
      return 0;
 
     return bithist[h];
   }
 
-  void updateNN(std::uint64_t planetid, bool prediction, bool real){
-    std::uint64_t h = hash(planetid);
+  bool getNN(std::uint64_t planetid) {
+    // since updateNN is called every frame, we always
+    // assume that there is a valid NN weight table stored
+    // at planetid
+    std::uint64_t h = hash(planetid, 11); // 12+1 for load factor
+    std::int16_t output = 0;
+    for(int i = 0; i < 8; ++i){
+      if((history >> i) % 2){
+        output += NN[h][i];
+      }
+      if((bithist[h] >> i) % 2){
+        output += NN[h][8+i];
+      }
+    }
 
+    if(output>0){
+      return 1;
+    } else return 0;
+  }
+
+  void updateNN(std::uint64_t planetid, bool prediction, bool real){
+    std::uint64_t h = hash(planetid, 11);
   }
 
 
@@ -144,6 +163,7 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
   // get recency
   int recency = roboMemory_ptr->getrecent(nextPlanetID);
   std::uint16_t bithistory = roboMemory_ptr->getbithist(nextPlanetID);
+  //bool nn = roboMemory_ptr->getNN(nextPlanetID);
 
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
   //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
@@ -165,6 +185,7 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
 void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPlanetID, bool timeOfDayOnNextPlanet) {
 
   // update recency
+  //std::cout << "PREDICTED: " << roboMemory_ptr->myprediction << "\t" << "REAL: " << timeOfDayOnNextPlanet << std::endl;
   
   roboMemory_ptr->updateall(nextPlanetID, timeOfDayOnNextPlanet);
   roboMemory_ptr->progress++;
@@ -180,6 +201,8 @@ static_assert(
     "Robo's memory exceeds 65536 bytes (64KiB) in your implementation. "
     "Prediction algorithms using so much "
     "memory are ineligible. Please reduce the size of your RoboMemory struct.");
+
+
 
 // Declare constructor/destructor for RoboPredictor
 RoboPredictor::RoboPredictor() {
