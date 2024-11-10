@@ -2,6 +2,7 @@
 // algorithm
 
 #include "PredictionAlgorithm.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -12,14 +13,17 @@
 struct RoboPredictor::RoboMemory {
   #define RECENCY 256
   #define BITHISTORY 1024
-  #define WEIGHTS_HIST 8
-  #define WEIGHTS_BITS 8
+  #define WEIGHTS_HIST 16
+  #define WEIGHTS_BITS 0
+  #define LEARNING_THRESHOLD 128
   const std::uint32_t PRIME = 2654435769;
   const std::uint64_t KNUTH = 11400714819323198485;
 
   // the current number of planets we've gone through
   int progress = 0; // KEEP THIS UPDATED!
-  bool myprediction = 0;
+  int confidence = 0;
+  bool chosen = 0; // 0 for spaceship, 1 for perceptron
+  bool chosen_pred = 0;
 
   // main history 
   std::uint64_t history = 0;
@@ -30,7 +34,7 @@ struct RoboPredictor::RoboMemory {
   // - last 8 bits used by planet
   // 33 total
   std::array<std::array<std::int8_t, WEIGHTS_HIST+WEIGHTS_BITS>, BITHISTORY*2> NN = {};
-  std::int8_t bias = 0;
+  std::array<int8_t, BITHISTORY*2> bias = {};
 
   // 00 for spaceship 11 for perceptron
   // values are tied to the LRU of bithistory to save memory
@@ -95,6 +99,7 @@ struct RoboPredictor::RoboMemory {
       bithist[blru[blru0]] = 0;
       //NN.erase(blru[blru0]);
       NN[blru[blru0]].fill(0);
+      bias[blru[blru0]] = 0;
       blru0 = (blru0 + 1) % BITHISTORY;
     }
 
@@ -117,17 +122,20 @@ struct RoboPredictor::RoboMemory {
     // at planetid
     std::uint64_t h = hash(planetid, 11); // 12+1 for load factor
     std::int16_t output = 0;
-    for(int i = 0; i < 8; ++i){
+    for(int i = 0; i < 16; ++i){
       if((history >> i) % 2){
         output += NN[h][i];
       }
+      /*
       if((bithist[h] >> i) % 2){
         output += NN[h][8+i];
       }
+      */
     }
 
-    output += bias;
+    output += bias[h];
 
+    confidence = abs(output);
     if(output>0){
       return 1;
     } else return 0;
@@ -136,22 +144,42 @@ struct RoboPredictor::RoboMemory {
   void updateNN(std::uint64_t planetid, bool prediction, bool real){
     std::uint64_t h = hash(planetid, 11);
 
-    int delta = (prediction == real) ? 1 : -1;
-    bias += delta;
-    for(int i = 0; i < 16; i++){
-      NN[h][i] += delta;
+    if(confidence <= LEARNING_THRESHOLD){
+      int delta = (prediction == real) ? 1 : -1;
+      bias[h] = std::clamp(bias[h]+delta, -127, 127);
+      for(int i = 0; i < 16; i++){
+        NN[h][i] = std::clamp(NN[h][i]+delta, -127, 127);
+      }
+    }
+  }
+
+  void addChoice(std::uint64_t planetid, bool real){
+    std::uint64_t h = hash(planetid, 11);
+    if(chosen_pred==real and choicetable[h]<3){
+      choicetable[h]++;
+    }
+    if(chosen_pred!=real and choicetable[h]){
+      choicetable[h]--;
+    }
+  }
+
+  bool get(std::uint64_t planetid, bool spaceshipComputerPrediction){
+    std::uint64_t h = hash(planetid, 11);
+    chosen =(choicetable[h] >> 1) % 2;
+    if(chosen) {
+      return getNN(planetid);
+    }
+    else {
+      return spaceshipComputerPrediction;
     }
   }
 
 
-  bool get(std::uint64_t planetid){
-
-  }
-
   void updateall(std::uint64_t planetid, bool outcome){
     addbithist(planetid, outcome);
     addrecent(planetid);
-    updateNN(planetid, myprediction, outcome);
+    addChoice(planetid, chosen_pred);
+    if(chosen) updateNN(planetid, chosen_pred, outcome);
     history = (history << 1) | outcome;
   }
 };
@@ -174,12 +202,13 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
   // get recency
   int recency = roboMemory_ptr->getrecent(nextPlanetID);
   std::uint16_t bithistory = roboMemory_ptr->getbithist(nextPlanetID);
+  roboMemory_ptr->chosen_pred = roboMemory_ptr->get(nextPlanetID, spaceshipComputerPrediction);
   //bool nn = roboMemory_ptr->getNN(nextPlanetID);
 
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
   //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
 
-  return roboMemory_ptr->myprediction = spaceshipComputerPrediction;
+  return spaceshipComputerPrediction;//roboMemory_ptr->chosen_pred;
 }
 
 // Robo can consult/update data structures in its memory
