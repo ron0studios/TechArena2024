@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iostream>
 #include <bitset>
+#include <stdio.h>
 
 // Place your RoboMemory content here
 // Note that the size of this data structure can't exceed 64KiB!
@@ -16,58 +17,128 @@ struct RoboPredictor::RoboMemory {
   #define WEIGHTS_HIST 16
   #define WEIGHTS_BITS 0
   #define LEARNING_THRESHOLD 128
+  #define GSHARE 16384
+  #define LOCPRED 4096 // local prediction
+  #define BANK1 8
+  #define BANK2 32
+  #define BANK3 64
+  #define BANK4 128
+  #define BANK_S 4096
+  #define BANK_L 2048
   const std::uint32_t PRIME = 2654435769;
   const std::uint64_t KNUTH = 11400714819323198485;
 
+  // we will implement a 64, 256, 1024, and 16384 tage
+
   // the current number of planets we've gone through
   int progress = 0; // KEEP THIS UPDATED!
-  int confidence = 0;
-  bool chosen = 0; // 0 for spaceship, 1 for perceptron
-  bool chosen_pred = 0;
-
+  bool pred = false;
+   
   // main history 
-  std::uint64_t history = 0;
-
-  // a set of perceptron weights mapped by an LRU
-  // FORMAT OF THE NN:
-  // - last 8 bits history
-  // - last 8 bits used by planet
-  // 33 total
-  std::array<std::array<std::int8_t, WEIGHTS_HIST+WEIGHTS_BITS>, BITHISTORY*2> NN = {};
-  std::array<int8_t, BITHISTORY*2> bias = {};
-
-  // 00 for spaceship 11 for perceptron
-  // values are tied to the LRU of bithistory to save memory
-  std::array<std::int8_t, BITHISTORY*2> choicetable = {0};
   
+  std::uint8_t hist8 = 0;
+  std::uint16_t hist16 = 0;
+  std::uint64_t hist64 = 0;
+  std::array<__uint128_t,2> hist256 = {};
 
-  // an ultra-simple LRU cache for recency
-  // OLD std::unordered_map<std::uint64_t, int> recency;
-  std::array<std::uint8_t, RECENCY*2> recency; // 2x load factor
-  std::array<std::uint16_t, RECENCY> rlru;
-    int rlru0 = 0; // front of queue
-    int rlru1 = 1; // back of queue
 
-  // an ultra-simple LRU cache for the "bit history" of a planet
-  //std::unordered_map<std::uint64_t, std::uint16_t> bithist;
-  std::array<std::uint16_t, BITHISTORY*2> bithist; // 2x load factor
-  std::array<std::uint16_t, BITHISTORY> blru;
-    int blru0 = 0; // front of queue
-    int blru1 = 0; // back of queue
-  
-  RoboMemory(){
-    recency.fill(0);
-    bithist.fill(0);
-    
-    //recency.reserve(RECENCY+10); // arbitrary +10
-    //bithist.reserve(BITHISTORY+10); // arbitrary +10
-    //NN.reserve(BITHISTORY+10); // arbitrary +10
+  std::array<std::uint16_t, BANK_S> bank1 = {};
+  std::array<std::uint16_t, BANK_S> bank2 = {};
+  std::array<std::uint16_t, BANK_S> bank3 = {};
+  std::array<std::uint16_t, BANK_S> bank4 = {};
+
+  // implement gshare
+  std::array<std::uint8_t, GSHARE> gshare = {};
+
+
+
+  std::array<__uint128_t, 2> lshift256(std::array<__uint128_t, 2> x){
+    x[0] <<= 1;
+    x[0] |= !std::min(1,__builtin_clz(x[1]));
+    x[1] <<= 1;
+    return x;
+  }
+
+  std::array<__uint128_t, 2> rshift256(std::array<__uint128_t, 2> x){
+    x[0] <<= 1;
+    x[0] |= !std::min(1,__builtin_clz(x[1]));
+    x[1] <<= 1;
+    return x;
+  }
+
+  std::array<__uint128_t, 2> xor256(std::array<__uint128_t, 2> x, std::array<__uint128_t, 2> y){
+    return {x[0]^y[0], x[1]^y[1]};
+  }
+
+  std::array<__uint128_t, 2> or256(std::array<__uint128_t, 2> x, std::array<__uint128_t, 2> y){
+    return {x[0]|y[0], x[1]|y[1]};
+  }
+
+  std::array<__uint128_t, 2> and256(std::array<__uint128_t, 2> x, std::array<__uint128_t, 2> y){
+    return {x[0]^y[0], x[1]^y[1]};
   }
 
   // a knuth multiplicative hash between 0 and 2**p (default 4096)
   std::uint64_t hash(std::uint64_t x, int p=12) {
     return (x*KNUTH) >> (64-p);
   }
+
+
+  
+
+
+  // a gshare hash XOR's both the GHR and planetid then applies
+  // knuths hash to bring the hash range down to 14 bita.
+  // assumes planetid is roughly maxes at 16 bit range
+  std::uint16_t gshare_hash(std::uint64_t planetid, std::uint64_t hist){
+    return foldhist(hist) ^ (std::uint16_t)hash(planetid,16);
+    //return hash(foldhist(hist64) ^ (std::uint16_t)hash(planetid,16), 14);
+  }
+
+  std::uint16_t gshare_hash16(std::uint64_t planetid){
+    return hist16 ^ (std::uint16_t)hash(planetid,16);
+    //return hash(foldhist(hist64) ^ (std::uint16_t)hash(planetid,16), 14);
+  }
+
+  // gets the 2 bit data from a hashed 16 bit id
+  std::uint8_t gshare_retrieve(std::uint16_t idx){
+    std::uint16_t tableid = idx >> 2;
+    std::uint16_t rowid = (idx&1) | (idx&2);
+    std::uint16_t val = (gshare[tableid] >> (rowid << 1)) & 3;
+    return val;
+  }
+  
+  // modified the stored 2 bit data from a hashed 16 bit id
+  void gshare_replace(std::uint16_t idx, std::uint8_t newval){
+    std::uint16_t tableid = idx >> 2;
+    std::uint16_t rowid = (idx&1) | (idx&2);
+    gshare[tableid] = (newval%2) ? gshare[tableid] | 1<<(2*rowid) 
+      : gshare[tableid] & ~(1<<(2*rowid));
+    gshare[tableid] = ((newval>>1)%2) ? gshare[tableid] | 1<<(2*rowid+1) 
+      : gshare[tableid] & ~(1<<(2*rowid+1));
+  }
+
+  // folds a 64 bit history into 16 bit number
+  std::uint16_t foldhist(std::uint64_t hist){
+    std::uint16_t out = hist;
+    out ^= hist >> 16;
+    out ^= hist >> 32;
+    out ^= hist >> 48;
+    return out;
+  }
+
+  // an ultra-simple LRU cache for recency
+  // OLD std::unordered_map<std::uint64_t, int> recency;
+  std::array<std::uint8_t, RECENCY*2> recency; // 2x load factor
+  std::array<std::uint16_t, RECENCY> rlru;
+    int rlru0 = 0; // front of queue
+    int rlru1 = 0; // back of queue
+
+  
+  RoboMemory(){
+    recency.fill(0);
+  }
+
 
   void addrecent(std::uint64_t planetid){
     std::uint64_t h = hash(planetid, 9);
@@ -91,96 +162,49 @@ struct RoboPredictor::RoboMemory {
     return progress-recency[h];
   }
 
-
-  void addbithist(std::uint64_t planetid, bool outcome){
-    std::uint64_t h = hash(planetid, 11); // 10+1 for load factor
-    if(blru0 == blru1){
-      //bithist.erase(blru[blru0]);
-      bithist[blru[blru0]] = 0;
-      //NN.erase(blru[blru0]);
-      NN[blru[blru0]].fill(0);
-      bias[blru[blru0]] = 0;
-      blru0 = (blru0 + 1) % BITHISTORY;
-    }
-
-    blru[blru1] = h;
-    bithist[h] = (bithist[h] << 1) | outcome;
-    blru1 = (blru1 + 1) % BITHISTORY;
-  }
-
-  std::uint64_t getbithist(std::uint64_t planetid){
-    std::uint64_t h = hash(planetid, 11);
-    if(!bithist[h])
-     return 0;
-
-    return bithist[h];
-  }
-
-  bool getNN(std::uint64_t planetid) {
-    // since updateNN is called every frame, we always
-    // assume that there is a valid NN weight table stored
-    // at planetid
-    std::uint64_t h = hash(planetid, 11); // 12+1 for load factor
-    std::int16_t output = 0;
-    for(int i = 0; i < 16; ++i){
-      if((history >> i) % 2){
-        output += NN[h][i];
-      }
-      /*
-      if((bithist[h] >> i) % 2){
-        output += NN[h][8+i];
-      }
-      */
-    }
-
-    output += bias[h];
-
-    confidence = abs(output);
-    if(output>0){
-      return 1;
-    } else return 0;
-  }
-
-  void updateNN(std::uint64_t planetid, bool prediction, bool real){
-    std::uint64_t h = hash(planetid, 11);
-
-    if(confidence <= LEARNING_THRESHOLD){
-      int delta = (prediction == real) ? 1 : -1;
-      bias[h] = std::clamp(bias[h]+delta, -127, 127);
-      for(int i = 0; i < 16; i++){
-        NN[h][i] = std::clamp(NN[h][i]+delta, -127, 127);
-      }
+  bool getgshare(std::uint64_t planetid){
+    std::uint16_t h = gshare_retrieve(gshare_hash16(planetid));
+    if((h >> 1) % 2){
+      return true;
+    } else {
+      return false;
     }
   }
-
-  void addChoice(std::uint64_t planetid, bool real){
-    std::uint64_t h = hash(planetid, 11);
-    if(chosen_pred==real and choicetable[h]<3){
-      choicetable[h]++;
-    }
-    if(chosen_pred!=real and choicetable[h]){
-      choicetable[h]--;
-    }
-  }
-
-  bool get(std::uint64_t planetid, bool spaceshipComputerPrediction){
-    std::uint64_t h = hash(planetid, 11);
-    chosen =(choicetable[h] >> 1) % 2;
-    if(chosen) {
-      return getNN(planetid);
-    }
-    else {
-      return spaceshipComputerPrediction;
-    }
-  }
-
 
   void updateall(std::uint64_t planetid, bool outcome){
-    addbithist(planetid, outcome);
-    addrecent(planetid);
-    addChoice(planetid, chosen_pred);
-    if(chosen) updateNN(planetid, chosen_pred, outcome);
-    history = (history << 1) | outcome;
+    //std::cout << progress << std::endl;
+    //addrecent(planetid);
+    hist64 = (hist64 << 1);
+    hist64 |= outcome;
+
+    hist16 = hist16 << 1;
+    hist16 |= outcome;
+
+    
+
+
+    std::uint16_t h = gshare_hash16(planetid);
+    //std::cout << (int)h << std::endl;
+    //std::cout << (int)h << std::endl;
+    //std::cout << std::bitset<64>(hist64) << std::endl;
+    //std::cout << (int)foldhist(hist64) << std::endl;
+    //std::cout <<  std::bitset<16>(hash(planetid,16)) << std::endl;
+    //std::cout << std::bitset<64>(h) << std::endl;
+
+    if(pred == 1){
+      std::cout << "Hello\n"<< std::endl;
+    }
+
+    if(pred==outcome){
+      //std::cout << "\tpred==outcome " << pred << std::endl;
+      std::uint8_t newval = gshare_retrieve(h);
+      newval = (pred) ? std::min(3,newval+1) : std::max(1, newval-1);
+      //std::cout << "\t" << std::bitset<8>(newval) << std::endl;
+      gshare_replace(h, newval);
+    }
+
+    //gshare_hash(planetid);
+    //foldhist(hist64);
   }
 };
 
@@ -200,15 +224,15 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
     std::uint64_t nextPlanetID, bool spaceshipComputerPrediction) {
 
   // get recency
-  int recency = roboMemory_ptr->getrecent(nextPlanetID);
-  std::uint16_t bithistory = roboMemory_ptr->getbithist(nextPlanetID);
-  roboMemory_ptr->chosen_pred = roboMemory_ptr->get(nextPlanetID, spaceshipComputerPrediction);
+  //int recency = roboMemory_ptr->getrecent(nextPlanetID);
   //bool nn = roboMemory_ptr->getNN(nextPlanetID);
 
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
   //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
-
-  return spaceshipComputerPrediction;//roboMemory_ptr->chosen_pred;
+  bool out = roboMemory_ptr->getgshare(nextPlanetID);
+  roboMemory_ptr->pred = out;
+  //std::cout << "\t" << out << std::endl;
+  return out;//roboMemory_ptr->chosen_pred;
 }
 
 // Robo can consult/update data structures in its memory
@@ -229,6 +253,9 @@ void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPla
   
   roboMemory_ptr->updateall(nextPlanetID, timeOfDayOnNextPlanet);
   roboMemory_ptr->progress++;
+
+
+  // gshare test
 }
 
 
