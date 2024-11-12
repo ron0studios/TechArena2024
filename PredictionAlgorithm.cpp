@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <bitset>
 #include <stdio.h>
@@ -17,14 +18,15 @@ struct RoboPredictor::RoboMemory {
   #define WEIGHTS_HIST 16
   #define WEIGHTS_BITS 0
   #define LEARNING_THRESHOLD 128
-  #define GSHARE 16384
+  #define GSHARE 256
   #define LOCPRED 4096 // local prediction
   #define BANK1 8
   #define BANK2 32
   #define BANK3 64
   #define BANK4 128
-  #define BANK_S 4096
+  #define BANK_S 256
   #define BANK_L 2048
+  #define BIMODAL 32768
   const std::uint32_t PRIME = 2654435769;
   const std::uint64_t KNUTH = 11400714819323198485;
 
@@ -49,6 +51,7 @@ struct RoboPredictor::RoboMemory {
 
   // implement gshare
   std::array<std::uint8_t, GSHARE> gshare = {};
+  std::array<std::uint8_t, 32768> bimodal = {};
 
 
 
@@ -84,7 +87,34 @@ struct RoboPredictor::RoboMemory {
   }
 
 
-  
+
+
+  bool getbimodal(std::uint64_t planetid){
+    std::uint16_t h = hash(planetid, 15);
+    //std::uint64_t h = planetid;
+    if(bimodal[h] > 4){
+      return true;
+    } else return false;
+  }
+
+  void addbimodal(std::uint64_t planetid, bool outcome){
+    std::uint16_t h = hash(planetid, 15);
+    //std::uint64_t h = planetid;
+    if(pred==outcome){
+      bimodal[h] = (pred) ? std::min(8, bimodal[h]+1) : std::max(0, bimodal[h]-1);
+    } else {
+      bimodal[h] = (pred) ? std::max(0, bimodal[h]-1) : std::min(8, bimodal[h]+1);
+    }
+  }
+
+  /* * * * * * * * * * * * * * *
+  * |-------------------------| *
+  * | HASHING FOR pseudo-TAGE | *
+  * |-------------------------| *
+  * * * * * * * * * * * * * * * */
+  std::uint16_t tag_hash(std::uint64_t planetid, std::uint64_t hist){
+    return 0;
+  }
 
 
   // a gshare hash XOR's both the GHR and planetid then applies
@@ -111,6 +141,8 @@ struct RoboPredictor::RoboMemory {
   // modified the stored 2 bit data from a hashed 16 bit id
   void gshare_replace(std::uint16_t idx, std::uint8_t newval){
     std::uint16_t tableid = idx >> 2;
+
+    //std::cout << std::bitset<8>(gshare[tableid]) << "\t" << std::bitset<8>(newval) << std::endl;
     std::uint16_t rowid = (idx&1) | (idx&2);
     gshare[tableid] = (newval%2) ? gshare[tableid] | 1<<(2*rowid) 
       : gshare[tableid] & ~(1<<(2*rowid));
@@ -137,6 +169,7 @@ struct RoboPredictor::RoboMemory {
   
   RoboMemory(){
     recency.fill(0);
+    bimodal.fill(4);
   }
 
 
@@ -164,6 +197,7 @@ struct RoboPredictor::RoboMemory {
 
   bool getgshare(std::uint64_t planetid){
     std::uint16_t h = gshare_retrieve(gshare_hash16(planetid));
+
     if((h >> 1) % 2){
       return true;
     } else {
@@ -180,10 +214,8 @@ struct RoboPredictor::RoboMemory {
     hist16 = hist16 << 1;
     hist16 |= outcome;
 
-    
+    addbimodal(planetid, outcome);
 
-
-    std::uint16_t h = gshare_hash16(planetid);
     //std::cout << (int)h << std::endl;
     //std::cout << (int)h << std::endl;
     //std::cout << std::bitset<64>(hist64) << std::endl;
@@ -191,15 +223,20 @@ struct RoboPredictor::RoboMemory {
     //std::cout <<  std::bitset<16>(hash(planetid,16)) << std::endl;
     //std::cout << std::bitset<64>(h) << std::endl;
 
-    if(pred == 1){
-      std::cout << "Hello\n"<< std::endl;
-    }
+    //std::cout << pred << std::endl;
 
+    //if(pred) std::cout << "HOOO" << std::endl;
+
+    std::uint16_t h = gshare_hash16(planetid);
     if(pred==outcome){
       //std::cout << "\tpred==outcome " << pred << std::endl;
       std::uint8_t newval = gshare_retrieve(h);
-      newval = (pred) ? std::min(3,newval+1) : std::max(1, newval-1);
+      newval = (pred) ? std::min(2,newval+1) : std::max(0, newval-1);
       //std::cout << "\t" << std::bitset<8>(newval) << std::endl;
+      gshare_replace(h, newval);
+    } else {
+      std::uint8_t newval = gshare_retrieve(h);
+      newval = (pred) ? std::max(0,newval-1) : std::min(2, newval+1);
       gshare_replace(h, newval);
     }
 
@@ -229,7 +266,7 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
 
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
   //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
-  bool out = roboMemory_ptr->getgshare(nextPlanetID);
+  bool out = roboMemory_ptr->getbimodal(nextPlanetID);
   roboMemory_ptr->pred = out;
   //std::cout << "\t" << out << std::endl;
   return out;//roboMemory_ptr->chosen_pred;
@@ -263,12 +300,13 @@ void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPla
 // Please don't modify this file below
 //
 // Check if RoboMemory does not exceed 64KiB
+/*
 static_assert(
     sizeof(RoboPredictor::RoboMemory) <= 65536,
     "Robo's memory exceeds 65536 bytes (64KiB) in your implementation. "
     "Prediction algorithms using so much "
     "memory are ineligible. Please reduce the size of your RoboMemory struct.");
-
+*/
 
 
 // Declare constructor/destructor for RoboPredictor
