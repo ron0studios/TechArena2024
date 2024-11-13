@@ -1,6 +1,7 @@
 // This file contains a template for the implementation of Robo prediction
 // algorithm
 
+
 #include "PredictionAlgorithm.hpp"
 #include <algorithm>
 #include <array>
@@ -10,25 +11,26 @@
 #include <bitset>
 #include <stdio.h>
 
+#define RECENCY 256
+#define BITHISTORY 1024
+#define WEIGHTS_HIST 16
+#define WEIGHTS_BITS 0
+#define LEARNING_THRESHOLD 128
+#define GSHARE 256
+#define LOCPRED 4096 // local prediction
+#define BANK1 8
+#define BANK2 32
+#define BANK3 64
+#define BANK4 128
+#define BANK_S 256
+#define BANK_L 2048
+#define BIMODAL 32768
+
 // Place your RoboMemory content here
 // Note that the size of this data structure can't exceed 64KiB!
 struct RoboPredictor::RoboMemory {
-  #define RECENCY 256
-  #define BITHISTORY 1024
-  #define WEIGHTS_HIST 16
-  #define WEIGHTS_BITS 0
-  #define LEARNING_THRESHOLD 128
-  #define GSHARE 256
-  #define LOCPRED 4096 // local prediction
-  #define BANK1 8
-  #define BANK2 32
-  #define BANK3 64
-  #define BANK4 128
-  #define BANK_S 256
-  #define BANK_L 2048
-  #define BIMODAL 32768
-  const std::uint32_t PRIME = 2654435769;
-  const std::uint64_t KNUTH = 11400714819323198485;
+  static const std::uint32_t PRIME = 2654435769;
+  static const std::uint64_t KNUTH = 11400714819323198485;
 
   // we will implement a 64, 256, 1024, and 16384 tage
 
@@ -42,44 +44,104 @@ struct RoboPredictor::RoboMemory {
   std::uint16_t hist16 = 0;
   std::uint64_t hist64 = 0;
   std::array<__uint128_t,2> hist256 = {};
+  std::array<__uint128_t,16> hist2048 = {};
 
+  struct tag {
+    std::uint8_t tag;
+    std::uint8_t counter;
+  };
 
-  std::array<std::uint16_t, BANK_S> bank1 = {};
-  std::array<std::uint16_t, BANK_S> bank2 = {};
-  std::array<std::uint16_t, BANK_S> bank3 = {};
-  std::array<std::uint16_t, BANK_S> bank4 = {};
+  std::array<tag, BANK_S> bank1 = {};
+  std::array<tag, BANK_S> bank2 = {};
+  std::array<tag, BANK_S> bank3 = {};
+  std::array<tag, BANK_S> bank4 = {};
 
-  // implement gshare
-  std::array<std::uint8_t, GSHARE> gshare = {};
-  std::array<std::uint8_t, 32768> bimodal = {};
+  // implement bimodal
+  // NOTE FOR TOMORROW
+  // THE HASH COLLISION DOESNT WORK BECAUSE
+  // THE CODE DOESNT KNOW WHEN TO STOP TRAVERSING
+  // THE LINKED LIST BECAUSE THERE IS NO INDICATOR THAT
+  // THE CURRENT NODE IS ACTUALLY THE VALUE WE WANT
+  //
+  // ALSO ALLOCATING 5 BITS TO THE POINTER MEANS A RANGE OF 32
+  // NOT 256!!!
+  struct Bimodal {
+    // first 5 bits pointer, next 3 bits saturator
+    std::array<std::uint8_t, 16384> data;
 
+    Bimodal(){
+      data.fill(0b11111111);
+    }
 
+    // a knuth multiplicative hash between 0 and 2**p (default 4096)
+    // its a terrible hash function but does the job (i think)
+    std::uint64_t hash(std::uint64_t x, int p=14) {
+      return (x*KNUTH) >> (64-p);
+    }
 
-  std::array<__uint128_t, 2> lshift256(std::array<__uint128_t, 2> x){
-    x[0] <<= 1;
-    x[0] |= !std::min(1,__builtin_clz(x[1]));
-    x[1] <<= 1;
-    return x;
-  }
+    std::uint16_t _get_idx(std::uint64_t planetid){
+      std::uint16_t h = hash(planetid);
+      std::uint8_t ptr = data[h];
+      if(ptr>>3 == 0b11111) return 0b1111111111111111; // useless
 
-  std::array<__uint128_t, 2> rshift256(std::array<__uint128_t, 2> x){
-    x[0] <<= 1;
-    x[0] |= !std::min(1,__builtin_clz(x[1]));
-    x[1] <<= 1;
-    return x;
-  }
+      std::uint16_t i = h; 
+      while(data[i]>>3 != 0){
+        i = std::clamp(h-128+(data[i]>>3), 0, 16384-1);
+      }
+
+      return i;
+    }
+
+    std::uint8_t _get_val(std::uint64_t planetid){
+      std::uint16_t idx =_get_idx(planetid); 
+      if(idx == 0b1111111111111111){
+        return 0b11111111;
+      }
+      return data[_get_idx(planetid)] & 0b00000111;
+    }
+
+    void _put_val(std::uint64_t planetid, std::uint8_t val){
+      std::uint16_t h = hash(planetid);
+      std::uint8_t ptr = data[h];
+      if(ptr>>3 == 0b11111) data[h] = 0 | val;
+      else {
+        // h+126 because we reserve 0b11111 as NULL
+         for(std::uint16_t i = std::max(h-128, 0); i < std::min(h+126, 16384-1); i++){
+          if(data[i]>>3 == 0b11111){
+            data[h] = (data[h] & 0b00000111) | ( (i-std::max(h-128,0)) << 3);
+            data[i] = 0 | val;
+            return;
+          }
+        }
+        // wth why are you here...
+        std::cout << "uh oh..." << std::endl;
+      }
+    }
+    
+    bool get(std::uint64_t planetid){
+      std::uint8_t code = _get_val(planetid);
+      if(code >> )
+      if((code >> 2)%2){
+        return true;
+      } else {
+        return false;
+      }
+    }
+
+    void update(std::uint64_t planetid, bool outcome, bool pred){
+      std::uint8_t cur = _get_val(planetid);
+      _put_val(planetid, std::clamp( (outcome) ? cur+1: cur-1, 0, 7));
+    }
+  };
+  Bimodal bimodal;
+
 
   std::array<__uint128_t, 2> xor256(std::array<__uint128_t, 2> x, std::array<__uint128_t, 2> y){
-    return {x[0]^y[0], x[1]^y[1]};
-  }
-
+    return {x[0]^y[0], x[1]^y[1]};}
   std::array<__uint128_t, 2> or256(std::array<__uint128_t, 2> x, std::array<__uint128_t, 2> y){
-    return {x[0]|y[0], x[1]|y[1]};
-  }
-
+    return {x[0]|y[0], x[1]|y[1]};}
   std::array<__uint128_t, 2> and256(std::array<__uint128_t, 2> x, std::array<__uint128_t, 2> y){
-    return {x[0]^y[0], x[1]^y[1]};
-  }
+    return {x[0]^y[0], x[1]^y[1]};}
 
   // a knuth multiplicative hash between 0 and 2**p (default 4096)
   std::uint64_t hash(std::uint64_t x, int p=12) {
@@ -87,122 +149,9 @@ struct RoboPredictor::RoboMemory {
   }
 
 
-
-
-  bool getbimodal(std::uint64_t planetid){
-    std::uint16_t h = hash(planetid, 15);
-    //std::uint64_t h = planetid;
-    if(bimodal[h] > 4){
-      return true;
-    } else return false;
-  }
-
-  void addbimodal(std::uint64_t planetid, bool outcome){
-    std::uint16_t h = hash(planetid, 15);
-    //std::uint64_t h = planetid;
-    if(pred==outcome){
-      bimodal[h] = (pred) ? std::min(8, bimodal[h]+1) : std::max(0, bimodal[h]-1);
-    } else {
-      bimodal[h] = (pred) ? std::max(0, bimodal[h]-1) : std::min(8, bimodal[h]+1);
-    }
-  }
-
-  /* * * * * * * * * * * * * * *
-  * |-------------------------| *
-  * | HASHING FOR pseudo-TAGE | *
-  * |-------------------------| *
-  * * * * * * * * * * * * * * * */
-  std::uint16_t tag_hash(std::uint64_t planetid, std::uint64_t hist){
-    return 0;
-  }
-
-
-  // a gshare hash XOR's both the GHR and planetid then applies
-  // knuths hash to bring the hash range down to 14 bita.
-  // assumes planetid is roughly maxes at 16 bit range
-  std::uint16_t gshare_hash(std::uint64_t planetid, std::uint64_t hist){
-    return foldhist(hist) ^ (std::uint16_t)hash(planetid,16);
-    //return hash(foldhist(hist64) ^ (std::uint16_t)hash(planetid,16), 14);
-  }
-
-  std::uint16_t gshare_hash16(std::uint64_t planetid){
-    return hist16 ^ (std::uint16_t)hash(planetid,16);
-    //return hash(foldhist(hist64) ^ (std::uint16_t)hash(planetid,16), 14);
-  }
-
-  // gets the 2 bit data from a hashed 16 bit id
-  std::uint8_t gshare_retrieve(std::uint16_t idx){
-    std::uint16_t tableid = idx >> 2;
-    std::uint16_t rowid = (idx&1) | (idx&2);
-    std::uint16_t val = (gshare[tableid] >> (rowid << 1)) & 3;
-    return val;
-  }
-  
-  // modified the stored 2 bit data from a hashed 16 bit id
-  void gshare_replace(std::uint16_t idx, std::uint8_t newval){
-    std::uint16_t tableid = idx >> 2;
-
-    //std::cout << std::bitset<8>(gshare[tableid]) << "\t" << std::bitset<8>(newval) << std::endl;
-    std::uint16_t rowid = (idx&1) | (idx&2);
-    gshare[tableid] = (newval%2) ? gshare[tableid] | 1<<(2*rowid) 
-      : gshare[tableid] & ~(1<<(2*rowid));
-    gshare[tableid] = ((newval>>1)%2) ? gshare[tableid] | 1<<(2*rowid+1) 
-      : gshare[tableid] & ~(1<<(2*rowid+1));
-  }
-
-  // folds a 64 bit history into 16 bit number
-  std::uint16_t foldhist(std::uint64_t hist){
-    std::uint16_t out = hist;
-    out ^= hist >> 16;
-    out ^= hist >> 32;
-    out ^= hist >> 48;
-    return out;
-  }
-
-  // an ultra-simple LRU cache for recency
-  // OLD std::unordered_map<std::uint64_t, int> recency;
-  std::array<std::uint8_t, RECENCY*2> recency; // 2x load factor
-  std::array<std::uint16_t, RECENCY> rlru;
-    int rlru0 = 0; // front of queue
-    int rlru1 = 0; // back of queue
-
-  
-  RoboMemory(){
-    recency.fill(0);
-    bimodal.fill(4);
-  }
-
-
-  void addrecent(std::uint64_t planetid){
-    std::uint64_t h = hash(planetid, 9);
-    if(rlru0 == rlru1){
-      //recency.erase(rlru[rlru0]);
-      recency[rlru[rlru0]] = 0;
-      rlru0 = (rlru0 + 1) % RECENCY;
-    }
-
-    rlru[rlru1] = h;
-    recency[h] = progress;
-    rlru1 = (rlru1 + 1) % RECENCY;
-  }
-
-  int getrecent(int planetid){
-    std::uint64_t h = hash(planetid, 9);
-    //if(!recency.count(planetid))
-    if(!recency[h])
-     return RECENCY;
-
-    return progress-recency[h];
-  }
-
-  bool getgshare(std::uint64_t planetid){
-    std::uint16_t h = gshare_retrieve(gshare_hash16(planetid));
-
-    if((h >> 1) % 2){
-      return true;
-    } else {
-      return false;
-    }
+  bool get_pred(std::uint64_t planetid){
+    pred = bimodal.get(planetid);
+    return pred;
   }
 
   void updateall(std::uint64_t planetid, bool outcome){
@@ -214,34 +163,8 @@ struct RoboPredictor::RoboMemory {
     hist16 = hist16 << 1;
     hist16 |= outcome;
 
-    addbimodal(planetid, outcome);
-
-    //std::cout << (int)h << std::endl;
-    //std::cout << (int)h << std::endl;
-    //std::cout << std::bitset<64>(hist64) << std::endl;
-    //std::cout << (int)foldhist(hist64) << std::endl;
-    //std::cout <<  std::bitset<16>(hash(planetid,16)) << std::endl;
-    //std::cout << std::bitset<64>(h) << std::endl;
-
-    //std::cout << pred << std::endl;
-
-    //if(pred) std::cout << "HOOO" << std::endl;
-
-    std::uint16_t h = gshare_hash16(planetid);
-    if(pred==outcome){
-      //std::cout << "\tpred==outcome " << pred << std::endl;
-      std::uint8_t newval = gshare_retrieve(h);
-      newval = (pred) ? std::min(2,newval+1) : std::max(0, newval-1);
-      //std::cout << "\t" << std::bitset<8>(newval) << std::endl;
-      gshare_replace(h, newval);
-    } else {
-      std::uint8_t newval = gshare_retrieve(h);
-      newval = (pred) ? std::max(0,newval-1) : std::min(2, newval+1);
-      gshare_replace(h, newval);
-    }
-
-    //gshare_hash(planetid);
-    //foldhist(hist64);
+    std::cout << std::bitset<8>(bimodal.data[0]) << "\t" << (int)planetid << "\t" << outcome<< std::endl;
+    bimodal.update(planetid, outcome, pred);
   }
 };
 
@@ -266,10 +189,10 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
 
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
   //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
-  bool out = roboMemory_ptr->getbimodal(nextPlanetID);
-  roboMemory_ptr->pred = out;
+  //bool out = roboMemory_ptr->getbimodal(nextPlanetID);
+  //roboMemory_ptr->pred = out;
   //std::cout << "\t" << out << std::endl;
-  return out;//roboMemory_ptr->chosen_pred;
+  return spaceshipComputerPrediction; // out;//roboMemory_ptr->chosen_pred;
 }
 
 // Robo can consult/update data structures in its memory
@@ -289,7 +212,7 @@ void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPla
   //std::cout << "PREDICTED: " << roboMemory_ptr->myprediction << "\t" << "REAL: " << timeOfDayOnNextPlanet << std::endl;
   
   roboMemory_ptr->updateall(nextPlanetID, timeOfDayOnNextPlanet);
-  roboMemory_ptr->progress++;
+  std::cout << roboMemory_ptr->progress++ << std::endl;
 
 
   // gshare test
@@ -300,13 +223,11 @@ void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPla
 // Please don't modify this file below
 //
 // Check if RoboMemory does not exceed 64KiB
-/*
 static_assert(
     sizeof(RoboPredictor::RoboMemory) <= 65536,
     "Robo's memory exceeds 65536 bytes (64KiB) in your implementation. "
     "Prediction algorithms using so much "
     "memory are ineligible. Please reduce the size of your RoboMemory struct.");
-*/
 
 
 // Declare constructor/destructor for RoboPredictor
