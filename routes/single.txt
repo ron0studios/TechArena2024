@@ -1,0 +1,4 @@
+#PlanetID TimeOfDay
+1	NIGHT
+1	DAY
+2	NIGHT
