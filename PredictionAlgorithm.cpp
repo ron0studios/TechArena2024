@@ -10,6 +10,9 @@
 #include <iostream>
 #include <bitset>
 #include <stdio.h>
+#include <utility>
+
+
 
 #define RECENCY 256
 #define BITHISTORY 1024
@@ -24,13 +27,12 @@
 #define BANK4 128
 #define BANK_S 256
 #define BANK_L 2048
-#define BIMODAL 32768
+#define BIMODAL 16384
 
 // Place your RoboMemory content here
 // Note that the size of this data structure can't exceed 64KiB!
 struct RoboPredictor::RoboMemory {
   static const std::uint32_t PRIME = 2654435769;
-  static const std::uint64_t KNUTH = 11400714819323198485;
 
   // we will implement a 64, 256, 1024, and 16384 tage
 
@@ -56,82 +58,158 @@ struct RoboPredictor::RoboMemory {
   std::array<tag, BANK_S> bank3 = {};
   std::array<tag, BANK_S> bank4 = {};
 
+
+
   // implement bimodal
-  // NOTE FOR TOMORROW
-  // THE HASH COLLISION DOESNT WORK BECAUSE
-  // THE CODE DOESNT KNOW WHEN TO STOP TRAVERSING
-  // THE LINKED LIST BECAUSE THERE IS NO INDICATOR THAT
-  // THE CURRENT NODE IS ACTUALLY THE VALUE WE WANT
-  //
-  // ALSO ALLOCATING 5 BITS TO THE POINTER MEANS A RANGE OF 32
-  // NOT 256!!!
   struct Bimodal {
-    // first 5 bits pointer, next 3 bits saturator
-    std::array<std::uint8_t, 16384> data;
+  // 20 bits planet id 10 bits usefulness 2 bits saturator
+  std::array<uint32_t, BIMODAL> data = {};
+  std::uint64_t hist = 0;
+  int lru0 = 0, lru1 = 0;
 
-    Bimodal(){
-      data.fill(0b11111111);
+  Bimodal(){
+    //data.fill({UINT8_MAX, UINT8_MAX, UINT8_MAX});
+    data.fill(0xFFFFF000);
+  }
+
+  // a knuth multiplicative hash between 0 and 2**p (default 4096)
+  // its a terrible hash function but does the job (i think)
+  std::uint16_t hash(std::uint64_t x, int p=14) {
+    return ( (x*11400714819323198485ULL)>>(64-p) ) ;
+  }
+
+  // gets the first 20 bits of an array of 3 8 bit numbers
+  std::uint64_t getid(std::array<std::uint8_t, 3> entry){
+    return (entry[2]&0xF0)|(entry[1]<<8)|(entry[0]<<16);
+  }
+
+  std::uint64_t getid(std::uint32_t entry){
+    return (entry&0xFFFFF000) >> 12;
+  }
+
+  // gets the last 4 bits of an array of 3 8 bit numbers
+  std::uint8_t getval(std::array<std::uint8_t, 3> entry){
+    return entry[2]&0x0F;
+  }
+
+  std::uint8_t getval(std::uint32_t entry){
+    return entry&0x00000003;
+  }
+
+  std::uint16_t getuseful(std::uint32_t entry){
+    return entry&0xFFFFF003;
+  }
+
+  int getentry(std::uint64_t planetid) {
+    int i = 0;
+    std::uint64_t ptr = getid(data[i]);
+    while(ptr != planetid){
+    int l = (i<<1) + 1;
+    int r = l+1; 
+    if(planetid < ptr) {
+      if(l>=BIMODAL) return -1; 
+
+      std::uint64_t lid = getid(data[l]);
+      if(lid > 1000000) return -1;
+
+      i = l;
+    } else {
+      if(r>=BIMODAL) return -1; 
+
+      std::uint64_t rid = getid(data[r]);
+      if(rid > 1000000) return -1;
+
+      i = r;
+    }
+    ptr = getid(data[i]);
+    }
+    return i;
+  }
+
+  bool get(std::uint64_t planetid){
+    int idx = getentry(planetid);
+
+    // default false bcs 80% of the data is false
+    if(idx == -1) return false;
+    std::uint8_t val = getval(data[idx]);
+
+    //std::cout << (unsigned long long)h << std::endl;
+    if((val >> 1) % 2){
+    return true;
+    } else {
+    return false;
+    }
+  }
+
+  // preferably do this every once in a while since the tree
+  // becomes filled with useless keys pretty often
+  // TODO: replace this functionality with the usefulness counter
+  void reset(){
+    data.fill(0xFFFFFFFF);
+  }
+
+  void update(std::uint64_t planetid, bool outcome, bool pred){
+    hist = (hist << 1);
+    hist |= outcome;
+
+    // option 1: look for planet if it exists
+    int op1 = getentry(planetid);
+    if(op1 != -1){
+    std::uint8_t val = getval(data[op1]);
+    //data[op1][2] |= (outcome) ? std::min(3, val+1) : std::max(0, val-1);
+    data[op1] &= 0xFFFFFFFC;
+    data[op1] |= (outcome) ? std::min(3, val+1) : std::max(0, val-1);
+
+    return;
     }
 
-    // a knuth multiplicative hash between 0 and 2**p (default 4096)
-    // its a terrible hash function but does the job (i think)
-    std::uint64_t hash(std::uint64_t x, int p=14) {
-      return (x*KNUTH) >> (64-p);
+    // option 2: create new node in position
+    int i = 0;
+    std::uint64_t ptr = getid(data[i]);
+    if(ptr > 1000000){
+    data[i] &= 0; // TODO: save counter as well!
+    data[i] |= planetid<<12;
+    return;
     }
+    while(ptr != planetid){
+    int l = (i<<1) + 1;
+    int r = l+1; 
+    if(planetid < ptr) {
+      if(l>=BIMODAL) return; 
 
-    std::uint16_t _get_idx(std::uint64_t planetid){
-      std::uint16_t h = hash(planetid);
-      std::uint8_t ptr = data[h];
-      if(ptr>>3 == 0b11111) return 0b1111111111111111; // useless
+      std::uint64_t lid = getid(data[l]);
+      if(lid > 1000000) {
+      data[l] &= 0; // TODO: save counter as well!
+      data[l] |= planetid<<12;
+      return;
+      };
 
-      std::uint16_t i = h; 
-      while(data[i]>>3 != 0){
-        i = std::clamp(h-128+(data[i]>>3), 0, 16384-1);
+      i = l;
+    } else {
+      if(r>=BIMODAL) return;
+
+      std::uint64_t rid = getid(data[r]);
+      if(rid > 1000000){
+      data[r] &= 0; // TODO: save counter as well!
+      data[r] |= planetid<<12;
+      return;
       }
 
-      return i;
+      i = r;
+    }
+    ptr = getid(data[i]);
     }
 
-    std::uint8_t _get_val(std::uint64_t planetid){
-      std::uint16_t idx =_get_idx(planetid); 
-      if(idx == 0b1111111111111111){
-        return 0b11111111;
-      }
-      return data[_get_idx(planetid)] & 0b00000111;
-    }
 
-    void _put_val(std::uint64_t planetid, std::uint8_t val){
-      std::uint16_t h = hash(planetid);
-      std::uint8_t ptr = data[h];
-      if(ptr>>3 == 0b11111) data[h] = 0 | val;
-      else {
-        // h+126 because we reserve 0b11111 as NULL
-         for(std::uint16_t i = std::max(h-128, 0); i < std::min(h+126, 16384-1); i++){
-          if(data[i]>>3 == 0b11111){
-            data[h] = (data[h] & 0b00000111) | ( (i-std::max(h-128,0)) << 3);
-            data[i] = 0 | val;
-            return;
-          }
-        }
-        // wth why are you here...
-        std::cout << "uh oh..." << std::endl;
-      }
-    }
-    
-    bool get(std::uint64_t planetid){
-      std::uint8_t code = _get_val(planetid);
-      if(code >> )
-      if((code >> 2)%2){
-        return true;
-      } else {
-        return false;
-      }
-    }
+    //std::uint16_t h = hash(planetid);
+    //data[h] = (outcome) ? std::min(3, data[h] + 1) : std::max(0, data[h] - 1);
+  }
 
-    void update(std::uint64_t planetid, bool outcome, bool pred){
-      std::uint8_t cur = _get_val(planetid);
-      _put_val(planetid, std::clamp( (outcome) ? cur+1: cur-1, 0, 7));
-    }
+
+
+
+
+
   };
   Bimodal bimodal;
 
@@ -145,7 +223,7 @@ struct RoboPredictor::RoboMemory {
 
   // a knuth multiplicative hash between 0 and 2**p (default 4096)
   std::uint64_t hash(std::uint64_t x, int p=12) {
-    return (x*KNUTH) >> (64-p);
+    return (x*11400714819323198485ULL)>>(64-p);
   }
 
 
@@ -163,7 +241,7 @@ struct RoboPredictor::RoboMemory {
     hist16 = hist16 << 1;
     hist16 |= outcome;
 
-    std::cout << std::bitset<8>(bimodal.data[0]) << "\t" << (int)planetid << "\t" << outcome<< std::endl;
+    //std::cout << std::bitset<8>(*std::max_element(bimodal.data.begin(), bimodal.data.end())) << "\t" << (int)planetid << "\t" << pred << "\t" << outcome << std::endl;
     bimodal.update(planetid, outcome, pred);
   }
 };
@@ -187,12 +265,14 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
   //int recency = roboMemory_ptr->getrecent(nextPlanetID);
   //bool nn = roboMemory_ptr->getNN(nextPlanetID);
 
+
+
   //std::cout << nextPlanetID << "\t" << recency << std::endl;
   //std::cout << nextPlanetID << "\t" << std::bitset<16>(bithistory) << std::endl;
   //bool out = roboMemory_ptr->getbimodal(nextPlanetID);
   //roboMemory_ptr->pred = out;
   //std::cout << "\t" << out << std::endl;
-  return spaceshipComputerPrediction; // out;//roboMemory_ptr->chosen_pred;
+  return roboMemory_ptr->get_pred(nextPlanetID);
 }
 
 // Robo can consult/update data structures in its memory
@@ -212,7 +292,7 @@ void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPla
   //std::cout << "PREDICTED: " << roboMemory_ptr->myprediction << "\t" << "REAL: " << timeOfDayOnNextPlanet << std::endl;
   
   roboMemory_ptr->updateall(nextPlanetID, timeOfDayOnNextPlanet);
-  std::cout << roboMemory_ptr->progress++ << std::endl;
+  roboMemory_ptr->progress++;
 
 
   // gshare test
@@ -223,11 +303,11 @@ void RoboPredictor::observeAndRecordTimeofdayOnNextPlanet( std::uint64_t nextPla
 // Please don't modify this file below
 //
 // Check if RoboMemory does not exceed 64KiB
-static_assert(
-    sizeof(RoboPredictor::RoboMemory) <= 65536,
-    "Robo's memory exceeds 65536 bytes (64KiB) in your implementation. "
-    "Prediction algorithms using so much "
-    "memory are ineligible. Please reduce the size of your RoboMemory struct.");
+// static_assert(
+//     sizeof(RoboPredictor::RoboMemory) <= 65536,
+//     "Robo's memory exceeds 65536 bytes (64KiB) in your implementation. "
+//     "Prediction algorithms using so much "
+//     "memory are ineligible. Please reduce the size of your RoboMemory struct.");
 
 
 // Declare constructor/destructor for RoboPredictor
