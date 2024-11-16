@@ -13,6 +13,7 @@
 
 #define LOCPRED 16384 // local prediction
 #define BIMODAL 16384
+#define HYBRID_BIM_LOC 16384
 #define BANK1 8
 #define BANK2 32
 #define BANK3 64
@@ -94,10 +95,6 @@ struct RoboPredictor::RoboMemory {
       data.fill(0);
     }
 
-    std::uint64_t hash(std::uint64_t x) {
-      return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
-    }
-
     bool get(std::uint64_t hashid){
       h = hashid;
       return bim.get(data[h]);
@@ -109,6 +106,43 @@ struct RoboPredictor::RoboMemory {
   };
   Local<LOCPRED> local;
 
+  // implement hybrid between bimodal and local predictor
+  template<int SIZE>
+  struct HybridBiLoc {
+    Bimodal<SIZE> options;
+    Local<SIZE> loc;
+    Bimodal<SIZE> bim;
+    bool locpred = false;
+    bool bimpred = false;
+
+    std::uint64_t h = 0; // stored to avoid calling hash() twice
+
+    HybridBiLoc(){
+    }
+
+    bool get(std::uint64_t hashid){
+      h = hashid;
+      bool choice = options.get(h);
+      locpred = loc.get(h);
+      bimpred = bim.get(h);
+      if(choice) return locpred;
+      else return bimpred;
+    }
+
+    void update(bool outcome, bool pred){
+      loc.update(outcome, locpred);
+      bim.update(outcome, bimpred);
+
+      if(locpred!=bimpred){
+        if(locpred==outcome){
+          options.update(true, pred);
+        } else {
+          options.update(false, pred);
+        }
+      }
+    }
+  };
+  HybridBiLoc<HYBRID_BIM_LOC> hybridbiloc;
 
   std::uint64_t getids(std::uint64_t x) {
       return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
@@ -122,7 +156,8 @@ struct RoboPredictor::RoboMemory {
   bool get_pred(std::uint64_t planetid) {
     std::uint64_t h = getids(planetid);
     //pred = bimodal.get(h);
-    pred = local.get(h);
+    //pred = local.get(h);
+    pred = hybridbiloc.get(h);
     return pred;
   }
 
@@ -139,7 +174,8 @@ struct RoboPredictor::RoboMemory {
     // bimodal.data.end())) << "\t" << (int)planetid << "\t" << pred << "\t" <<
     // outcome << std::endl;
     //bimodal.update(outcome, pred);
-    local.update(outcome, pred);
+    //local.update(outcome, pred);
+    hybridbiloc.update(outcome, pred);
   }
 };
 
