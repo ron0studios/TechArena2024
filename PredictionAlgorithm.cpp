@@ -13,7 +13,10 @@
 
 #define LOCPRED 16384 // local prediction
 #define BIMODAL 16384
+#define GSHARE 16384
 #define HYBRID_BIM_LOC 16384
+#define HYBRID_GSH_LOC 16384
+#define HYBRID_GLO_LOC 16384
 #define BANK1 8
 #define BANK2 32
 #define BANK3 64
@@ -82,6 +85,29 @@ struct RoboPredictor::RoboMemory {
   };
   Bimodal<BIMODAL> bimodal;
 
+  // implement GHare with 14 bit history
+  struct GShare {
+    // a bimodal predictor for every 14 bit combo
+    Bimodal<16384> bim;
+    std::uint16_t hist = 0;
+    std::uint64_t h = 0;
+
+    GShare(){}
+
+    bool get(std::uint64_t hashid){
+      h = hashid^(hist&0x3FFF);
+      return bim.get(h);
+    }
+
+    void update(bool outcome, bool pred){
+      hist <<= 1; hist |= outcome;
+      bim.update(outcome, pred);
+    }
+
+  };
+  GShare gshare;
+
+
   // implement local predictor
   template<int SIZE>
   struct Local{
@@ -105,6 +131,26 @@ struct RoboPredictor::RoboMemory {
     }
   };
   Local<LOCPRED> local;
+
+  // implement Global with 14 bit history
+  struct Global {
+    // a bimodal predictor for every 14 bit combo
+    Bimodal<16384> bim;
+    std::uint16_t hist = 0;
+
+    Global(){}
+
+    bool get(){
+      return bim.get(hist&0x3FFF);
+    }
+
+    void update(bool outcome, bool pred){
+      hist <<= 1; hist |= outcome;
+      bim.update(outcome, pred);
+    }
+
+  };
+  Global global;
 
   // implement hybrid between bimodal and local predictor
   template<int SIZE>
@@ -144,6 +190,48 @@ struct RoboPredictor::RoboMemory {
   };
   HybridBiLoc<HYBRID_BIM_LOC> hybridbiloc;
 
+
+  // implement hybrid between gshare and local predictor
+  template<int SIZE>
+  struct HybridGshLoc {
+    Bimodal<SIZE> options;
+    Local<SIZE> loc;
+    GShare gsh;
+    bool locpred = false;
+    bool gshpred = false;
+
+    std::uint64_t h = 0; // stored to avoid calling hash() twice
+
+    HybridGshLoc(){
+    }
+
+    bool get(std::uint64_t hashid){
+      h = hashid;
+      bool choice = options.get(h);
+      locpred = loc.get(h);
+      gshpred = gsh.get(h);
+      if(choice) return locpred;
+      else return gshpred;
+    }
+
+    void update(bool outcome, bool pred){
+      loc.update(outcome, locpred);
+      gsh.update(outcome, gshpred);
+
+      if(locpred!=gshpred){
+        if(locpred==outcome){
+          options.update(true, pred);
+        } else {
+          options.update(false, pred);
+        }
+      }
+    }
+  };
+  HybridGshLoc<HYBRID_GSH_LOC> hybridgshloc;
+
+
+
+
   std::uint64_t getids(std::uint64_t x) {
       return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
     }
@@ -157,7 +245,10 @@ struct RoboPredictor::RoboMemory {
     std::uint64_t h = getids(planetid);
     //pred = bimodal.get(h);
     //pred = local.get(h);
-    pred = hybridbiloc.get(h);
+    pred = global.get();
+    //pred = hybridbiloc.get(h);
+    //pred = hybridgshloc.get(h);
+    //pred = gshare.get(h);
     return pred;
   }
 
@@ -175,7 +266,10 @@ struct RoboPredictor::RoboMemory {
     // outcome << std::endl;
     //bimodal.update(outcome, pred);
     //local.update(outcome, pred);
-    hybridbiloc.update(outcome, pred);
+    global.update(outcome, pred);
+    //hybridbiloc.update(outcome, pred);
+    //hybridgshloc.update(outcome, pred);
+    //gshare.update(outcome, pred);
   }
 };
 
