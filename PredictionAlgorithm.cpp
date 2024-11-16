@@ -11,20 +11,12 @@
 #include <stdio.h>
 #include <utility>
 
-#define RECENCY 256
-#define BITHISTORY 1024
-#define WEIGHTS_HIST 16
-#define WEIGHTS_BITS 0
-#define LEARNING_THRESHOLD 128
-#define GSHARE 256
-#define LOCPRED 4096 // local prediction
+#define LOCPRED 16384 // local prediction
+#define BIMODAL 16384
 #define BANK1 8
 #define BANK2 32
 #define BANK3 64
 #define BANK4 128
-#define BANK_S 1
-#define BANK_L 2048
-#define BIMODAL 16384
 
 
 //std::array<std::uint32_t, 16384> ids = {1,2,3,4};
@@ -34,7 +26,6 @@
 // Place your RoboMemory content here
 // Note that the size of this data structure can't exceed 64KiB!
 struct RoboPredictor::RoboMemory {
-  static const std::uint32_t PRIME = 2654435769;
 
   // we will implement a 64, 256, 1024, and 16384 tage
 
@@ -56,28 +47,24 @@ struct RoboPredictor::RoboMemory {
     std::uint8_t counter;
   };
 
-  std::array<tag, BANK_S> bank1 = {};
-  std::array<tag, BANK_S> bank2 = {};
-  std::array<tag, BANK_S> bank3 = {};
-  std::array<tag, BANK_S> bank4 = {};
+  std::array<tag, BANK1> bank1 = {};
+  std::array<tag, BANK2> bank2 = {};
+  std::array<tag, BANK3> bank3 = {};
+  std::array<tag, BANK4> bank4 = {};
 
   // implement bimodal
+  template<int SIZE>
   struct Bimodal{
     // 4 entries per 8 bits, 2 bits saturator
-    std::array<std::uint8_t, 4096> data;
+    std::array<std::uint8_t, (SIZE>>2)> data;
     std::uint64_t h = 0;
 
     Bimodal(){
       data.fill(0);
     }
 
-    std::uint64_t hash(std::uint64_t x) {
-      return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
-    }
-
-
-    bool get(std::uint64_t planetid){
-      h = hash(planetid);
+    bool get(std::uint64_t hashid){
+      h = hashid;
       // gets the sub index in the data itself iykwim
       std::uint8_t val = (data[h>>2]&(0b11<<((h&0x03)<<1)))>>((h&0x03)<<1);
       if((val>>1)%2){
@@ -86,26 +73,46 @@ struct RoboPredictor::RoboMemory {
     }
 
 
-    void update(std::uint64_t planetid, bool outcome, bool pred){
+    void update(bool outcome, bool pred){
       std::uint8_t val = (data[h>>2]&(0b11<<((h&0x03)<<1)))>>((h&0x03)<<1);
       data[h>>2] &= ~(0b11<<((h&0x03)<<1));
       data[h>>2] |= ((outcome) ? std::min(3, val+1) : std::max(0, val-1))<<((h&0x03)<<1);
     }
   };
-  Bimodal bimodal;
+  Bimodal<BIMODAL> bimodal;
 
-  std::array<__uint128_t, 2> xor256(std::array<__uint128_t, 2> x,
-                                    std::array<__uint128_t, 2> y) {
-    return {x[0] ^ y[0], x[1] ^ y[1]};
-  }
-  std::array<__uint128_t, 2> or256(std::array<__uint128_t, 2> x,
-                                   std::array<__uint128_t, 2> y) {
-    return {x[0] | y[0], x[1] | y[1]};
-  }
-  std::array<__uint128_t, 2> and256(std::array<__uint128_t, 2> x,
-                                    std::array<__uint128_t, 2> y) {
-    return {x[0] ^ y[0], x[1] ^ y[1]};
-  }
+  // implement local predictor
+  template<int SIZE>
+  struct Local{
+    // a bimodal predictor for every 8 bit combo
+    Bimodal<256> bim;
+    // 8 bits local history 
+    std::array<std::uint8_t, SIZE> data;
+    std::uint64_t h = 0; // stored to avoid calling hash() twice
+
+    Local(){
+      data.fill(0);
+    }
+
+    std::uint64_t hash(std::uint64_t x) {
+      return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
+    }
+
+    bool get(std::uint64_t hashid){
+      h = hashid;
+      return bim.get(data[h]);
+    }
+
+    void update(bool outcome, bool pred){
+      bim.update(outcome, pred);
+    }
+  };
+  Local<LOCPRED> local;
+
+
+  std::uint64_t getids(std::uint64_t x) {
+      return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
+    }
 
   // a knuth multiplicative hash between 0 and 2**p (default 4096)
   std::uint64_t hash(std::uint64_t x, int p = 12) {
@@ -113,7 +120,9 @@ struct RoboPredictor::RoboMemory {
   }
 
   bool get_pred(std::uint64_t planetid) {
-    pred = bimodal.get(planetid);
+    std::uint64_t h = getids(planetid);
+    //pred = bimodal.get(h);
+    pred = local.get(h);
     return pred;
   }
 
@@ -129,7 +138,8 @@ struct RoboPredictor::RoboMemory {
     // std::cout << std::bitset<8>(*std::max_element(bimodal.data.begin(),
     // bimodal.data.end())) << "\t" << (int)planetid << "\t" << pred << "\t" <<
     // outcome << std::endl;
-    bimodal.update(planetid, outcome, pred);
+    //bimodal.update(outcome, pred);
+    local.update(outcome, pred);
   }
 };
 
