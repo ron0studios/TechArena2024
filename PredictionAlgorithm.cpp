@@ -77,7 +77,7 @@ struct RoboPredictor::RoboMemory {
   // TAGE table history 8
   struct Table8{
     // 12 bit tag, 2 bit saturator, 2 bit usefulness
-    std::array<uint16_t, 4096> data;
+    std::array<uint16_t, 8192> data;
     std::uint8_t hist = 0;
     std::uint16_t phr = 0;
 
@@ -86,11 +86,11 @@ struct RoboPredictor::RoboMemory {
     }
 
     std::uint16_t getIdx(std::uint64_t hashid){
-      return (hist^(hashid%4096)^phr^(phr>>12))&0x0FFF;
+      return ((hist)^(hashid%8192)^phr^(phr>>13))&0x1FFF;
     }
 
     std::uint16_t gen_tag(std::uint64_t hashid){
-      return (hist^(hashid%4096))&0x0FFF;
+      return ((hist)^(hashid%4096))&0x0FFF;
     }
 
     std::uint16_t fetch_tag(std::uint64_t hashid){
@@ -138,8 +138,9 @@ struct RoboPredictor::RoboMemory {
   // TAGE table history 32
   struct Table32{
     // 12 bit tag, 2 bit saturator, 2 bit usefulness
-    std::array<uint16_t, 8192> data;
+    std::array<uint16_t, 16384> data;
     std::uint32_t hist = 0;
+    std::uint16_t hist14 = 0;
     std::uint16_t hist12 = 0;
     std::uint16_t hist11 = 0; // CSR2
     std::uint16_t phr = 0;
@@ -149,7 +150,7 @@ struct RoboPredictor::RoboMemory {
     }
 
     std::uint16_t getIdx(std::uint64_t hashid){
-      return (hist12^(hashid%8192)^phr^(phr>>12))&0x1FFF;
+      return (hist14^(hashid%16384)^phr^(phr>>14))&0x3FFF;
     }
 
     std::uint16_t gen_tag(std::uint64_t hashid){
@@ -194,6 +195,7 @@ struct RoboPredictor::RoboMemory {
     void histupdate(bool outcome, std::uint64_t planetid){
       hist <<= 1; hist |= outcome;
       hist12 = (hist^(hist>>12)^(hist>>24))&0xFFF;
+      hist14 = (hist^(hist>>14)^(hist>>28))&0x3FFF;
       //hist11 = (hist^(hist>>11)^(hist>>22))&0xBFF;
       phr <<= 1; phr |= planetid&1;
     }
@@ -526,11 +528,12 @@ struct RoboPredictor::RoboMemory {
   struct Global {
     // a bimodal predictor for every 8 bit combo
     Bimodal<256> bim;
-    std::uint8_t hist = 0;
+    std::uint16_t hist = 0;
 
     Global(){}
 
     bool get(){
+      return false;
       return bim.get(hist);
     }
 
@@ -650,29 +653,29 @@ struct RoboPredictor::RoboMemory {
 
   
   // implement hybrid between Bimodal and GShare 8bit predictor
-  struct HybridLocGsh {
+  struct HybridBimGlo {
     Bimodal<16384> options;
-    Local bim;
-    GShare gsh;
+    Bimodal<16384> bim;
+    Global gsh;
     bool bimpred = false;
     bool gshpred = false;
 
     std::uint64_t h = 0; // stored to avoid calling hash() twice
 
-    HybridLocGsh(){
+    HybridBimGlo(){
     }
 
     bool get(std::uint64_t hashid){
       h = hashid;
       bool choice = options.get(h);
       bimpred = bim.get(h);
-      gshpred = gsh.get(h);
+      gshpred = gsh.get();
       if(choice) return bimpred;
       else return gshpred;
     }
 
     void update(bool outcome, bool pred){
-      bim.update(outcome, bimpred);
+      bim.update(outcome);
       gsh.update(outcome, gshpred);
 
       if(bimpred!=gshpred){
@@ -690,8 +693,9 @@ struct RoboPredictor::RoboMemory {
   // initialise predictors
   //HybridBimShip hybridbimloc;
   //HybridBimGsh<16384> hybridbimgsh;
-  TAGE tage;
+  //TAGE tage;
   //GShare loc;
+  HybridBimGlo hbg;
   RoboMemory(){
   }
 
@@ -706,8 +710,8 @@ struct RoboPredictor::RoboMemory {
 
   bool get_pred(std::uint64_t planetid, bool spaceshipComputerPrediction) {
     std::uint64_t h = getids(planetid);
-    //pred = hybridbimloc.get(h, spaceshipComputerPrediction);
-    pred = tage.get(h);
+    //pred = tage.get(h);
+    pred = hbg.get(h);
     return pred;
   }
 
@@ -723,6 +727,8 @@ struct RoboPredictor::RoboMemory {
     //hybridbimloc.update(outcome, pred);
     //loc.update(outcome, pred);
     
+    hbg.update(outcome, pred);
+    /*
     tage.update(planetid, outcome);
     if(progress%256000==0){
       for(int i = 0; i < 8192; i++){
@@ -733,6 +739,7 @@ struct RoboPredictor::RoboMemory {
         tage.bank2.data[i] &= ~0xC;
       }
     }
+    */
   }
 };
 
