@@ -46,16 +46,6 @@ struct RoboPredictor::RoboMemory {
   std::array<__uint128_t, 2> hist256 = {};
   std::array<__uint128_t, 16> hist2048 = {};
 
-  struct tag {
-    std::uint8_t tag;
-    std::uint8_t counter;
-  };
-
-  std::array<tag, BANK1> bank1 = {};
-  std::array<tag, BANK2> bank2 = {};
-  std::array<tag, BANK3> bank3 = {};
-  std::array<tag, BANK4> bank4 = {};
-
   // implement bimodal
   template<int SIZE>
   struct Bimodal{
@@ -77,44 +67,444 @@ struct RoboPredictor::RoboMemory {
     }
 
 
-    void update(bool outcome, bool pred){
+    void update(bool outcome){
       std::uint8_t val = (data[h>>2]&(0b11<<((h&0x03)<<1)))>>((h&0x03)<<1);
       data[h>>2] &= ~(0b11<<((h&0x03)<<1));
       data[h>>2] |= ((outcome) ? std::min(3, val+1) : std::max(0, val-1))<<((h&0x03)<<1);
     }
   };
-  Bimodal<BIMODAL> bimodal;
 
-  // implement GHare with 14 bit history
-  struct GShare {
-    // a bimodal predictor for every 14 bit combo
-    Bimodal<16384> bim;
-    std::uint16_t hist = 0;
+  // TAGE table history 8
+  struct Table8{
+    // 12 bit tag, 2 bit saturator, 2 bit usefulness
+    std::array<uint16_t, 4096> data;
+    std::uint8_t hist = 0;
+    std::uint16_t phr = 0;
+
+    Table8(){
+      data.fill(0);
+    }
+
+    std::uint16_t getIdx(std::uint64_t hashid){
+      return (hist^(hashid%4096)^phr^(phr>>12))&0x0FFF;
+    }
+
+    std::uint16_t gen_tag(std::uint64_t hashid){
+      return (hist^(hashid%4096))&0x0FFF;
+    }
+
+    std::uint16_t fetch_tag(std::uint64_t hashid){
+      return data[getIdx(hashid)];
+    }
+
+    std::uint8_t get(std::uint64_t hashid){
+      std::uint16_t store = fetch_tag(hashid);
+      std::uint16_t real = gen_tag(hashid);
+      if(store==real){
+        if((data[getIdx(hashid)] >> 3)%2){
+          return true;
+        } else {
+          return false;
+        }
+      }
+      return 0b11111111;
+    }
+
+
+    std::uint8_t getU(std::uint64_t hashid){
+      return data[getIdx(hashid)]&0x3;
+    }
+ 
+    void changeU(bool positive, std::uint64_t hashid){
+      std::uint16_t idx = getIdx(hashid);
+      std::uint8_t val = data[idx]&0x3;
+      data[idx] &= ~0x3;
+      data[idx] |= (positive) ? std::min(3,val+1) : std::max(0, val-1);
+    }
+
+    void changeS(bool positive, std::uint64_t hashid){
+      std::uint16_t idx = getIdx(hashid);
+      std::uint8_t val = data[idx]&0xC;
+      data[idx] &= ~0xC;
+      data[idx] |= ((positive) ? std::min(3,val+1) : std::max(0, val-1))<<2;
+    }
+
+    void histupdate(bool outcome, std::uint64_t planetid){
+      hist <<= 1; hist |= outcome;
+      phr <<= 1; phr |= planetid&1;
+    }
+  };
+
+  // TAGE table history 32
+  struct Table32{
+    // 12 bit tag, 2 bit saturator, 2 bit usefulness
+    std::array<uint16_t, 8192> data;
+    std::uint32_t hist = 0;
+    std::uint16_t hist12 = 0;
+    std::uint16_t hist11 = 0; // CSR2
+    std::uint16_t phr = 0;
+
+    Table32(){
+      data.fill(0);
+    }
+
+    std::uint16_t getIdx(std::uint64_t hashid){
+      return (hist12^(hashid%8192)^phr^(phr>>12))&0x1FFF;
+    }
+
+    std::uint16_t gen_tag(std::uint64_t hashid){
+      return (hist12^(hashid%8192))&0x0FFF;
+    }
+
+    std::uint16_t fetch_tag(std::uint64_t hashid){
+      return data[getIdx(hashid)]>>4;
+    }
+
+    std::uint8_t get(std::uint64_t hashid){
+      std::uint16_t store = fetch_tag(hashid);
+      std::uint16_t real = gen_tag(hashid);
+      if(store==real){
+        if((data[getIdx(hashid)] >> 3)%2){
+          return true;
+        } else {
+          return false;
+        }
+      }
+      return 0b11111111;
+    }
+
+    std::uint8_t getU(std::uint64_t hashid){
+      return data[getIdx(hashid)]&0x3;
+    }
+
+    void changeU(bool positive, std::uint64_t hashid){
+      std::uint16_t idx = getIdx(hashid);
+      std::uint8_t val = data[idx]&0x3;
+      data[idx] &= ~0x3;
+      data[idx] |= (positive) ? std::min(3,val+1) : std::max(0, val-1);
+    }
+
+    void changeS(bool positive, std::uint64_t hashid){
+      std::uint16_t idx = getIdx(hashid);
+      std::uint8_t val = data[idx]&0xC;
+      data[idx] &= ~0xC;
+      data[idx] |= ((positive) ? std::min(3,val+1) : std::max(0, val-1))<<2;
+    }
+
+    void histupdate(bool outcome, std::uint64_t planetid){
+      hist <<= 1; hist |= outcome;
+      hist12 = (hist^(hist>>12)^(hist>>24))&0xFFF;
+      //hist11 = (hist^(hist>>11)^(hist>>22))&0xBFF;
+      phr <<= 1; phr |= planetid&1;
+    }
+
+  };
+
+  // TAGE table history 128
+  struct Table128{
+    // 12 bit tag, 2 bit saturator, 2 bit usefulness
+    std::array<uint16_t, 4096> data;
+    __uint128_t hist = 0;
+    std::uint16_t hist12 = 0;
+    std::uint16_t hist11 = 0;
+    std::uint16_t phr = 0;
+
+    Table128(){
+      data.fill(0);
+    }
+
+    // TODO fold hashid
+    std::uint16_t getIdx(std::uint64_t hashid){
+      return (hist12^(hashid%4096)^phr^(phr>>12))&0x0FFF;
+    }
+
+    std::uint16_t gen_tag(std::uint64_t hashid){
+      return (hist12^(hashid%4096))&0x0FFF;
+    }
+
+    std::uint16_t fetch_tag(std::uint64_t hashid){
+      return data[getIdx(hashid)]>>4;
+    }
+
+    std::uint8_t get(std::uint64_t hashid){
+      std::uint16_t store = fetch_tag(hashid);
+      std::uint16_t real = gen_tag(hashid);
+      if(store==real){
+        if((data[getIdx(hashid)] >> 3)%2){
+          return true;
+        } else {
+          return false;
+        }
+      }
+      return 0b11111111;
+    }
+
+    std::uint8_t getU(std::uint64_t hashid){
+      return data[getIdx(hashid)]&0x3;
+    }
+
+    void changeU(bool positive, std::uint64_t hashid){
+      std::uint16_t idx = getIdx(hashid);
+      std::uint8_t val = data[idx]&0x3;
+      data[idx] &= ~0x3;
+      data[idx] |= (positive) ? std::min(3,val+1) : std::max(0, val-1);
+    }
+
+    void changeS(bool positive, std::uint64_t hashid){
+      std::uint16_t idx = getIdx(hashid);
+      std::uint8_t val = data[idx]&0xC;
+      data[idx] &= ~0xC;
+      data[idx] |= ((positive) ? std::min(3,val+1) : std::max(0, val-1))<<2;
+    }
+
+    void histupdate(bool outcome, std::uint64_t planetid){
+      hist <<= 1; hist |= outcome;
+      hist12 = hist; // ~20 operations :(
+      hist12 ^= hist >> 12; hist12 ^= hist >> 24; 
+      hist12 ^= hist >> 36; hist12 ^= hist >> 48;
+      hist12 ^= hist >> 60; hist12 ^= hist >> 72;
+      hist12 ^= hist >> 84; hist12 ^= hist >> 96;
+      hist12 ^= hist >> 108; hist12 ^= hist >> 120;
+      hist12 &= 0xFFF;
+
+      //hist11 = hist; // ~20 operations :(
+      //hist11 ^= hist >> 11; hist11 ^= hist >> 22; 
+      //hist11 ^= hist >> 33; hist11 ^= hist >> 44;
+      //hist11 ^= hist >> 55; hist11 ^= hist >> 66;
+      //hist11 ^= hist >> 77; hist11 ^= hist >> 88;
+      //hist11 ^= hist >> 99; hist11 ^= hist >> 110;
+      //hist11 ^= hist >> 121;
+      //hist11 &= 0xBFF;
+
+      phr <<= 1; phr |= planetid&1;
+    }
+  };
+
+  struct TAGE {
     std::uint64_t h = 0;
-
-    GShare(){}
+    __uint128_t hist = 0;
+    Bimodal<16384> bank0;
+    Table8 bank1; 
+    Table32 bank2;
+    Table128 bank3;
+    int t_pred = 0; bool pred = false;
+    int t_alt = 0; bool alt = false;
 
     bool get(std::uint64_t hashid){
-      h = hashid^(hist&0x3FFF);
-      return bim.get(h);
+      h = hashid;
+      std::uint8_t b3pred = bank3.get(hashid);
+      std::uint8_t b2pred = bank2.get(hashid);
+      std::uint8_t b1pred = bank1.get(hashid);
+      bool b0pred = bank0.get(hashid);
+      std::array<std::uint8_t, 4> preds = {b0pred, b1pred, b2pred, b3pred};
+
+
+      // using if statement spaghetti because 
+      // incrementing (i.e for loops) uses 3
+      // points per loop
+      if(b3pred != 0b11111111){
+        t_pred = 3; pred = b3pred;
+        if(b2pred != 0b11111111){
+          t_alt = 2; alt = b2pred;
+        } else if (b1pred != 0b11111111){
+          t_alt = 1; alt = b1pred;
+        } else {
+          t_alt = 0; alt = b0pred;
+        }
+      } else if(b2pred != 0b11111111){
+        t_pred = 2; pred = b2pred;
+        if(b1pred != 0b11111111){
+          t_alt = 1; alt = b1pred;
+        } else {
+          t_alt = 0; alt = b0pred;
+        }
+      } else if(b1pred != 0b11111111){
+        t_pred = 1; pred = b1pred;
+        t_alt = 0; alt = b0pred;
+      } else {
+        t_pred = t_alt = 0;
+        pred = alt = b0pred;
+      }
+
+      /*
+      if(b3pred != 0b11111111 or b2pred != 0b11111111 or b1pred != 0b11111111){
+        std::cout << "YUH" << std::endl;
+      }
+      */
+
+      if((preds[t_pred]>>1)%2==0){
+        return pred;
+      } return alt;
+    }
+
+    void update(std::uint64_t planetid, bool outcome){
+
+      if(pred != alt){
+        switch(t_pred){
+          case 3:
+            bank3.changeU(outcome==pred,h);
+            break;
+          case 2:
+            bank2.changeU(outcome==pred,h);
+            break;
+          case 1:
+            bank1.changeU(outcome==pred,h);
+            break;
+        }
+      }
+
+      switch(t_pred){
+        case 3:
+          bank3.changeS(outcome,h);
+          break;
+        case 2:
+          bank2.changeS(outcome,h);
+          break;
+        case 1:
+          bank1.changeS(outcome,h);
+          break;
+        case 0:
+          bank0.update(outcome);
+          break;
+      }
+
+
+      // entry allocation
+      if(pred != outcome){
+        // get usefulness
+        // brace for michelin star spaghetti
+        std::uint8_t rnd = rand()%256;
+        if(t_pred==2){
+          std::uint8_t u3 = bank3.getU(h);
+          if(u3==0) {
+            std::uint16_t idx = bank3.getIdx(h);
+            bank3.data[idx] = 0;
+            bank3.data[idx] |= bank3.gen_tag(h) << 4;
+          } else bank3.changeU(false, h);
+        } else if(t_pred==1){
+          std::uint8_t u3 = bank3.getU(h);
+          std::uint8_t u2 = bank2.getU(h);
+
+          if((u2==0) and (u3==0)){
+            if(rnd<169){
+              std::uint16_t idx = bank2.getIdx(h);
+              bank2.data[idx] = 0;
+              bank2.data[idx] |= bank2.gen_tag(h) << 4;
+            } else {
+              std::uint16_t idx = bank3.getIdx(h);
+              bank3.data[idx] = 0;
+              bank3.data[idx] |= bank3.gen_tag(h) << 4;
+            }
+          } else if (u2==0) {
+            std::uint16_t idx = bank2.getIdx(h);
+            bank2.data[idx] = 0;
+            bank2.data[idx] |= bank2.gen_tag(h) << 4;
+          } else if (u3==0){
+            std::uint16_t idx = bank3.getIdx(h);
+            bank3.data[idx] = 0;
+            bank3.data[idx] |= bank3.gen_tag(h) << 4;
+          } else {
+            bank3.changeU(false, h);
+            bank2.changeU(false, h);
+          }
+
+        } else if(t_pred==0){
+          std::uint8_t u3 = bank3.getU(h);
+          std::uint8_t u2 = bank2.getU(h);
+          std::uint8_t u1 = bank1.getU(h);
+          if(u3==0 and u2==0 and u1==0){
+            if(rnd>219){
+              std::uint16_t idx = bank3.getIdx(h);
+              bank3.data[idx] = 0b1000;
+              bank3.data[idx] |= bank3.gen_tag(h) << 4;
+            } else if(rnd>146){
+              std::uint16_t idx = bank2.getIdx(h);
+              bank2.data[idx] = 0b1000;
+              bank2.data[idx] |= bank2.gen_tag(h) << 4;
+            } else {
+              std::uint16_t idx = bank1.getIdx(h);
+              bank1.data[idx] = 0b1000;
+              bank1.data[idx] |= bank1.gen_tag(h) << 4;
+            }
+          }
+          else if(u1==0 and u2==0){
+            if(rnd<169){
+              std::uint16_t idx = bank1.getIdx(h);
+              bank1.data[idx] = 0b1000;
+              bank1.data[idx] |= bank1.gen_tag(h) << 4;
+            } else {
+              std::uint16_t idx = bank2.getIdx(h);
+              bank2.data[idx] = 0b1000;
+              bank2.data[idx] |= bank2.gen_tag(h) << 4;
+            }
+          } else if(u2==0 and u3==0){
+            if(rnd<169){
+              std::uint16_t idx = bank2.getIdx(h);
+              bank2.data[idx] = 0b1000;
+              bank2.data[idx] |= bank2.gen_tag(h) << 4;
+            } else {
+              std::uint16_t idx = bank3.getIdx(h);
+              bank3.data[idx] = 0b1000;
+              bank3.data[idx] |= bank3.gen_tag(h) << 4;
+            }
+          } else if(u1==0 and u3==0){
+            if(rnd<169){
+              std::uint16_t idx = bank1.getIdx(h);
+              bank1.data[idx] = 0b1000;
+              bank1.data[idx] |= bank1.gen_tag(h) << 4;
+            } else {
+              std::uint16_t idx = bank3.getIdx(h);
+              bank3.data[idx] = 0b1000;
+              bank3.data[idx] |= bank3.gen_tag(h) << 4;
+            }
+          } else {
+            bank3.changeU(false, h);
+            bank2.changeU(false, h);
+            bank1.changeU(false, h);
+          }
+        }
+      } 
+
+      hist <<= 1; hist |= outcome;
+      bank3.histupdate(outcome, planetid);
+      bank2.histupdate(outcome, planetid);
+      bank1.histupdate(outcome, planetid);
+      t_pred = t_alt = 0;
+      pred = alt = false;
+    }
+  };
+
+  // implement GHare with 16 bit history
+  struct GShare {
+    // a bimodal predictor for every 8 bit combo
+    Bimodal<262144> bim;
+    std::uint16_t hist = 0;
+    std::uint16_t phr = 0;
+    std::uint64_t h = 0;
+
+    GShare(){
+    }
+
+    bool get(std::uint64_t hashid){
+      h = hashid;
+      return bim.get(hist);
     }
 
     void update(bool outcome, bool pred){
       hist <<= 1; hist |= outcome;
-      bim.update(outcome, pred);
+      phr <<= 1; phr |= h&1;
+      bim.update(outcome);
     }
 
   };
-  GShare gshare;
 
 
   // implement local predictor
-  template<int SIZE>
   struct Local{
-    // a bimodal predictor for every 8 bit combo
-    Bimodal<256> bim;
-    // 8 bits local history 
-    std::array<std::uint8_t, SIZE> data;
+    // a bimodal predictor for every 16 bit combo
+    Bimodal<65536> bim;
+    // 16 bits local history 
+    std::array<std::uint16_t, 16384> data;
     std::uint64_t h = 0; // stored to avoid calling hash() twice
 
     Local(){
@@ -127,43 +517,41 @@ struct RoboPredictor::RoboMemory {
     }
 
     void update(bool outcome, bool pred){
-      bim.update(outcome, pred);
+      data[h] <<= 1; data[h] |= outcome;
+      bim.update(outcome);
     }
   };
-  Local<LOCPRED> local;
 
-  // implement Global with 14 bit history
+  // implement Global with 8 bit history
   struct Global {
-    // a bimodal predictor for every 14 bit combo
-    Bimodal<16384> bim;
-    std::uint16_t hist = 0;
+    // a bimodal predictor for every 8 bit combo
+    Bimodal<256> bim;
+    std::uint8_t hist = 0;
 
     Global(){}
 
     bool get(){
-      return bim.get(hist&0x3FFF);
+      return bim.get(hist);
     }
 
     void update(bool outcome, bool pred){
       hist <<= 1; hist |= outcome;
-      bim.update(outcome, pred);
+      bim.update(outcome);
     }
 
   };
-  Global global;
 
   // implement hybrid between bimodal and local predictor
-  template<int SIZE>
-  struct HybridBiLoc {
-    Bimodal<SIZE> options;
-    Local<SIZE> loc;
-    Bimodal<SIZE> bim;
+  struct HybridBimLoc {
+    Bimodal<16384> options;
+    Local loc;
+    Bimodal<16384> bim;
     bool locpred = false;
     bool bimpred = false;
 
     std::uint64_t h = 0; // stored to avoid calling hash() twice
 
-    HybridBiLoc(){
+    HybridBimLoc(){
     }
 
     bool get(std::uint64_t hashid){
@@ -177,60 +565,135 @@ struct RoboPredictor::RoboMemory {
 
     void update(bool outcome, bool pred){
       loc.update(outcome, locpred);
-      bim.update(outcome, bimpred);
+      bim.update(outcome);
 
       if(locpred!=bimpred){
         if(locpred==outcome){
-          options.update(true, pred);
+          options.update(true);
         } else {
-          options.update(false, pred);
+          options.update(false);
         }
       }
     }
   };
-  HybridBiLoc<HYBRID_BIM_LOC> hybridbiloc;
 
 
-  // implement hybrid between gshare and local predictor
-  template<int SIZE>
-  struct HybridGshLoc {
-    Bimodal<SIZE> options;
-    Local<SIZE> loc;
+  // implement hybrid between Bimodal and GShare 8bit predictor
+  struct HybridBimGsh {
+    Bimodal<16384> options;
+    Bimodal<16384> bim;
     GShare gsh;
-    bool locpred = false;
+    bool bimpred = false;
     bool gshpred = false;
 
     std::uint64_t h = 0; // stored to avoid calling hash() twice
 
-    HybridGshLoc(){
+    HybridBimGsh(){
     }
 
     bool get(std::uint64_t hashid){
       h = hashid;
       bool choice = options.get(h);
-      locpred = loc.get(h);
+      bimpred = bim.get(h);
       gshpred = gsh.get(h);
-      if(choice) return locpred;
+      if(choice) return bimpred;
       else return gshpred;
     }
 
     void update(bool outcome, bool pred){
-      loc.update(outcome, locpred);
+      bim.update(outcome);
       gsh.update(outcome, gshpred);
 
-      if(locpred!=gshpred){
-        if(locpred==outcome){
-          options.update(true, pred);
+      if(bimpred!=gshpred){
+        if(bimpred==outcome){
+          options.update(true);
         } else {
-          options.update(false, pred);
+          options.update(false);
         }
       }
     }
   };
-  HybridGshLoc<HYBRID_GSH_LOC> hybridgshloc;
+
+  // implement hybrid between Bimodal and the spaceship predictor
+  struct HybridBimShip {
+    Bimodal<16384> options;
+    Bimodal<16384> bim;
+    bool bimpred = false;
+    bool shippred = false;
+
+    std::uint64_t h = 0; // stored to avoid calling hash() twice
+
+    HybridBimShip(){
+    }
+
+    bool get(std::uint64_t hashid, bool ship){
+      h = hashid;
+      bool choice = options.get(h);
+      bimpred = bim.get(h);
+      shippred = ship;
+      if(choice) return bimpred;
+      else return shippred;
+    }
+
+    void update(bool outcome, bool pred){
+      bim.update(outcome);
+
+      if(bimpred!=shippred){
+        if(bimpred==outcome){
+          options.update(true);
+        } else {
+          options.update(false);
+        }
+      }
+    }
+  };
+
+  
+  // implement hybrid between Bimodal and GShare 8bit predictor
+  struct HybridLocGsh {
+    Bimodal<16384> options;
+    Local bim;
+    GShare gsh;
+    bool bimpred = false;
+    bool gshpred = false;
+
+    std::uint64_t h = 0; // stored to avoid calling hash() twice
+
+    HybridLocGsh(){
+    }
+
+    bool get(std::uint64_t hashid){
+      h = hashid;
+      bool choice = options.get(h);
+      bimpred = bim.get(h);
+      gshpred = gsh.get(h);
+      if(choice) return bimpred;
+      else return gshpred;
+    }
+
+    void update(bool outcome, bool pred){
+      bim.update(outcome, bimpred);
+      gsh.update(outcome, gshpred);
+
+      if(bimpred!=gshpred){
+        if(bimpred==outcome){
+          options.update(true);
+        } else {
+          options.update(false);
+        }
+      }
+    }
+  };
 
 
 
+  // initialise predictors
+  //HybridBimShip hybridbimloc;
+  //HybridBimGsh<16384> hybridbimgsh;
+  TAGE tage;
+  //GShare loc;
+  RoboMemory(){
+  }
 
   std::uint64_t getids(std::uint64_t x) {
       return std::lower_bound(ids.begin(), ids.end(), x)-ids.begin();
@@ -241,14 +704,10 @@ struct RoboPredictor::RoboMemory {
     return (x * 11400714819323198485ULL) >> (64 - p);
   }
 
-  bool get_pred(std::uint64_t planetid) {
+  bool get_pred(std::uint64_t planetid, bool spaceshipComputerPrediction) {
     std::uint64_t h = getids(planetid);
-    //pred = bimodal.get(h);
-    //pred = local.get(h);
-    pred = global.get();
-    //pred = hybridbiloc.get(h);
-    //pred = hybridgshloc.get(h);
-    //pred = gshare.get(h);
+    //pred = hybridbimloc.get(h, spaceshipComputerPrediction);
+    pred = tage.get(h);
     return pred;
   }
 
@@ -261,15 +720,19 @@ struct RoboPredictor::RoboMemory {
     hist16 = hist16 << 1;
     hist16 |= outcome;
 
-    // std::cout << std::bitset<8>(*std::max_element(bimodal.data.begin(),
-    // bimodal.data.end())) << "\t" << (int)planetid << "\t" << pred << "\t" <<
-    // outcome << std::endl;
-    //bimodal.update(outcome, pred);
-    //local.update(outcome, pred);
-    global.update(outcome, pred);
-    //hybridbiloc.update(outcome, pred);
-    //hybridgshloc.update(outcome, pred);
-    //gshare.update(outcome, pred);
+    //hybridbimloc.update(outcome, pred);
+    //loc.update(outcome, pred);
+    
+    tage.update(planetid, outcome);
+    if(progress%256000==0){
+      for(int i = 0; i < 8192; i++){
+        if(i<4096){
+          tage.bank1.data[i] &= ~0xC;
+          tage.bank3.data[i] &= ~0xC;
+        }
+        tage.bank2.data[i] &= ~0xC;
+      }
+    }
   }
 };
 
@@ -297,7 +760,9 @@ bool RoboPredictor::predictTimeOfDayOnNextPlanet(
   // std::endl; bool out = roboMemory_ptr->getbimodal(nextPlanetID);
   // roboMemory_ptr->pred = out;
   // std::cout << "\t" << out << std::endl;
-  return roboMemory_ptr->get_pred(nextPlanetID);
+  
+
+  return roboMemory_ptr->get_pred(nextPlanetID, spaceshipComputerPrediction);
 }
 
 // Robo can consult/update data structures in its memory
